@@ -74,3 +74,8 @@ Desktop.ini
 # Local configs and logs
 *.log
 local_config.json
+
+# C/C++ build artifacts
+*.lib
+*.exp
+*.obj

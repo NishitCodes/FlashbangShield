@@ -319,8 +319,11 @@ class ShieldEngine:
                 frame_count = 0
                 fps_last_time = now
 
-            if not self.config.enabled or self._paused.is_set():
-                # Smoothly relax dimming to 0.0 if disabled
+            # Check if an exclusive fullscreen 3D game is active (QUNS_RUNNING_D3D_FULL_SCREEN)
+            game_active = self.sampler.is_fullscreen_game_active()
+
+            if not self.config.enabled or self._paused.is_set() or game_active:
+                # Smoothly relax dimming to 0.0 if disabled, paused, or inside exclusive fullscreen game
                 if self._overall_current_dimming > 0.001:
                     self._overall_current_dimming = self._apply_asymmetric_easing(
                         self._overall_current_dimming, 0.0, dt
@@ -330,7 +333,7 @@ class ShieldEngine:
                     self._overall_current_dimming = 0.0
 
                 with self._lock:
-                    self._stats.enabled = False
+                    self._stats.enabled = self.config.enabled and not game_active
                     self._stats.overlay_alpha = self._overall_current_dimming
                     self._stats.fps = current_fps
                     self._stats.timestamp = now

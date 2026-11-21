@@ -309,17 +309,27 @@ class _MonitorSamplerContext:
 
 
 class ScreenSampler:
-    """Multi-monitor screen luminance sampler with zero-allocation GDI fast paths."""
+    """Multi-monitor screen luminance sampler with Tier 1 Native DXGI and Tier 3 GDI fast paths."""
 
     def __init__(self, resolution: int = 64):
         self.resolution = resolution
         self.monitors: List[MonitorInfo] = []
         self._contexts: Dict[int, _MonitorSamplerContext] = {}
+
+        # Tier 1 Native DXGI HDR pipeline
+        try:
+            from .native_sampler import NativeDXGISampler
+            self.native_dxgi = NativeDXGISampler(prefer_hdr=True)
+        except Exception:
+            self.native_dxgi = None
+
         self.refresh_monitors()
 
     def refresh_monitors(self) -> List[MonitorInfo]:
         """Re-enumerate monitors and recreate sampling contexts."""
-        self.close()
+        for ctx in self._contexts.values():
+            ctx.close()
+        self._contexts.clear()
         self.monitors = enumerate_monitors()
         self._contexts = {
             m.id: _MonitorSamplerContext(m, self.resolution)
@@ -328,7 +338,12 @@ class ScreenSampler:
         return self.monitors
 
     def sample_monitor(self, monitor_id: int, curve_gamma: float = 2.0) -> float:
-        """Sample luminance for a specific monitor."""
+        """Sample luminance for a specific monitor using Tier 1 DXGI or Tier 3 GDI fallback."""
+        if self.native_dxgi and self.native_dxgi.available:
+            res = self.native_dxgi.sample_monitor(monitor_id)
+            if res is not None:
+                return float(res.effective_luminance)
+
         ctx = self._contexts.get(monitor_id)
         if ctx:
             return ctx.sample_luminance(curve_gamma)
@@ -336,10 +351,16 @@ class ScreenSampler:
 
     def sample_all(self, curve_gamma: float = 2.0) -> Dict[int, float]:
         """Sample luminance across all active monitors."""
-        return {
-            m_id: ctx.sample_luminance(curve_gamma)
-            for m_id, ctx in self._contexts.items()
-        }
+        results = {}
+        for m in self.monitors:
+            results[m.id] = self.sample_monitor(m.id, curve_gamma)
+        return results
+
+    def is_fullscreen_game_active(self) -> bool:
+        """Check if an exclusive fullscreen 3D game is active via D3D state."""
+        if self.native_dxgi and self.native_dxgi.available:
+            return self.native_dxgi.is_fullscreen_game_active()
+        return False
 
     def sample_overall(self, curve_gamma: float = 2.0) -> float:
         """Calculate weighted or average luminance across all monitors."""
@@ -350,7 +371,9 @@ class ScreenSampler:
         return float(max(readings.values()))
 
     def close(self):
-        """Clean up all sampling contexts."""
+        """Release all GDI and native DXGI capture contexts."""
+        if hasattr(self, "native_dxgi") and self.native_dxgi:
+            self.native_dxgi.close()
         for ctx in self._contexts.values():
             ctx.close()
         self._contexts.clear()
