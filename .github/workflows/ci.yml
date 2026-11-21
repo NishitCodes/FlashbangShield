@@ -1,0 +1,100 @@
+name: CI & Release Build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  lint-and-test:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run code validation
+        run: |
+          python -m compileall flashbang_shield
+
+      - name: Run unit and integration tests
+        run: |
+          pytest -v
+
+  build-executable:
+    needs: lint-and-test
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build standalone executable
+        run: |
+          python build_exe.py
+
+      - name: Upload executable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlashbangShield-Windows-x64
+          path: dist/FlashbangShield.exe
+          if-no-files-found: error
+
+  publish-release:
+    needs: build-executable
+    if: github.event_name == 'release'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download built artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: FlashbangShield-Windows-x64
+          path: dist
+
+      - name: Calculate SHA-256 Checksum
+        id: checksum
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash dist/FlashbangShield.exe -Algorithm SHA256).Hash
+          echo "SHA256: $hash"
+          "$hash  FlashbangShield.exe" | Out-File -Encoding utf8 dist/checksums.sha256
+
+      - name: Upload assets to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/FlashbangShield.exe
+            dist/checksums.sha256

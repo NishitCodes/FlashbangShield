@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flashbang-shield"
+version = "1.0.0"
+description = "Real-time adaptive screen brightness and flashbang suppression for Windows with zero-feedback layered overlay"
+authors = [
+    { name = "Flashbang Shield Team" }
+]
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "pywin32>=306; sys_platform == 'win32'",
+    "screeninfo>=0.8.1",
+    "pillow>=10.0.0",
+    "numpy>=1.24.0",
+    "pystray>=0.19.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pyinstaller>=6.0.0",
+]
+
+[project.scripts]
+flashbang-shield = "flashbang_shield.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["flashbang_shield*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
