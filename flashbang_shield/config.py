@@ -7,6 +7,8 @@ and Windows startup registry integration.
 import json
 import os
 import sys
+import threading
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -78,7 +80,7 @@ class Config:
     hotkeys_enabled: bool = True
 
     # Observers for change notifications
-    _observers: List[Callable[["Config"], None]] = field(default_factory=list, repr=False, compare=False)
+    _observers: List[Callable[["Config"], None]] = field(default_factory=list, init=False, repr=False, compare=False)
 
     # --- Property Aliases for full compatibility ---
     @property
@@ -140,8 +142,14 @@ class Config:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert configuration to dictionary."""
-        d = asdict(self)
-        d.pop("_observers", None)
+        d = {}
+        for f in self.__dataclass_fields__:
+            if f == "_observers":
+                continue
+            val = getattr(self, f)
+            if isinstance(val, tuple):
+                val = list(val)
+            d[f] = val
         return d
 
     @classmethod
@@ -183,12 +191,38 @@ def load_config(path: Optional[Path | str] = None) -> Config:
     return Config()
 
 
+_save_lock = threading.Lock()
+
+
 def save_config(config: Config, path: Optional[Path | str] = None) -> None:
-    """Persist configuration to JSON file."""
+    """Persist configuration to JSON file atomically and thread-safely."""
     cfg_path = Path(path) if path else get_default_config_path()
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(cfg_path, "w", encoding="utf-8") as f:
-        json.dump(config.to_dict(), f, indent=2)
+    payload = json.dumps(config.to_dict(), indent=2)
+
+    with _save_lock:
+        temp_path = cfg_path.with_name(
+            f"{cfg_path.name}.tmp.{os.getpid()}.{threading.get_ident()}.{time.perf_counter_ns()}"
+        )
+        try:
+            with open(temp_path, "w", encoding="utf-8") as f:
+                f.write(payload)
+
+            # Retry replace for Windows file locks (antivirus/indexing/concurrent replace)
+            for attempt in range(5):
+                try:
+                    temp_path.replace(cfg_path)
+                    break
+                except OSError:
+                    if attempt == 4:
+                        raise
+                    time.sleep(0.01)
+        finally:
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
 
 
 def set_run_at_startup(enable: bool, app_name: str = "FlashbangShield", exe_path: Optional[str] = None) -> bool:

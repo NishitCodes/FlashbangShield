@@ -261,6 +261,9 @@ SHIELD_API int ShieldCore_StartCapture(int monitor_index, int prefer_hdr) {
         CloseDesktop(hDesk);
     }
 
+    // Refresh monitor HDR metadata on start/re-acquisition
+    QueryMonitorHDRInfo(ctx->hmonitor, ctx->is_hdr, ctx->sdr_white_nits, ctx->max_nits);
+
     // Enumerate DXGI outputs to match HMONITOR
     IDXGIFactory1* pFactory = nullptr;
     if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&pFactory))) {
@@ -388,7 +391,11 @@ SHIELD_API int ShieldCore_StartCapture(int monitor_index, int prefer_hdr) {
 SHIELD_API int ShieldCore_Sample(int monitor_index, unsigned int timeout_ms, ShieldLuminanceResult* out_result) {
     if (!out_result || monitor_index < 0 || monitor_index >= (int)s_monitors.size()) return 0;
     auto& ctx = s_monitors[monitor_index];
-    if (!ctx->pDuplication) return 0;
+    if (!ctx->pDuplication) {
+        if (!ShieldCore_StartCapture(monitor_index, ctx->is_hdr ? 1 : 0) || !ctx->pDuplication) {
+            return 0;
+        }
+    }
 
     auto t0 = std::chrono::high_resolution_clock::now();
 
@@ -412,12 +419,29 @@ SHIELD_API int ShieldCore_Sample(int monitor_index, unsigned int timeout_ms, Shi
         return 1;
     }
 
-    if (FAILED(hr) || !pDesktopResource) {
+    if (FAILED(hr)) {
         if (hr == DXGI_ERROR_ACCESS_LOST) {
             // Mode switch, resolution change, or UAC desktop switch
             ShieldCore_StartCapture(monitor_index, ctx->is_hdr ? 1 : 0);
         }
         return 0;
+    }
+
+    if (!pDesktopResource) {
+        // Desktop image did not update (e.g. mouse cursor shape/position update only)
+        // Must release frame to prevent DXGI_ERROR_INVALID_CALL on subsequent acquisitions
+        ctx->pDuplication->ReleaseFrame();
+        out_result->monitor_id = monitor_index;
+        out_result->mean_linear_lum = ctx->last_mean;
+        out_result->p90_linear_lum = ctx->last_p90;
+        out_result->effective_lum = ctx->last_eff;
+        out_result->mean_nits = ctx->last_mean_nits;
+        out_result->peak_nits = ctx->last_peak_nits;
+        out_result->sdr_white_nits = ctx->sdr_white_nits;
+        out_result->is_hdr = (ctx->capture_format == DXGI_FORMAT_R16G16B16A16_FLOAT) ? 1 : 0;
+        out_result->has_new_frame = 0;
+        out_result->capture_latency_ms = 0.0f;
+        return 1;
     }
 
     ID3D11Texture2D* pDesktopTex = nullptr;
@@ -474,6 +498,7 @@ SHIELD_API int ShieldCore_Sample(int monitor_index, unsigned int timeout_ms, Shi
 
     if (is_fp16) {
         // Linear scRGB FP16: 1.0 = 80 nits
+        float ref_white = (ctx->sdr_white_nits > 10.0f) ? ctx->sdr_white_nits : 80.0f;
         for (int y = 0; y < 36; ++y) {
             const uint16_t* pRow = (const uint16_t*)((const uint8_t*)mapped.pData + y * mapped.RowPitch);
             for (int x = 0; x < 64; ++x) {
@@ -486,8 +511,8 @@ SHIELD_API int ShieldCore_Sample(int monitor_index, unsigned int timeout_ms, Shi
                 float nits = lin_y * 80.0f;
                 if (nits > peak_nits) peak_nits = nits;
 
-                // Normalize to [0..1] relative to monitor peak nits
-                float norm_lum = std::min(1.0f, nits / std::max(100.0f, ctx->max_nits));
+                // Normalize to [0..1] relative to reference white
+                float norm_lum = std::min(1.0f, nits / ref_white);
                 lum_values.push_back(norm_lum);
                 sum_lum += norm_lum;
             }
@@ -522,7 +547,7 @@ SHIELD_API int ShieldCore_Sample(int monitor_index, unsigned int timeout_ms, Shi
     ctx->last_mean = mean_lum;
     ctx->last_p90 = p90_lum;
     ctx->last_eff = effective_lum;
-    ctx->last_mean_nits = effective_lum * (is_fp16 ? ctx->max_nits : ctx->sdr_white_nits);
+    ctx->last_mean_nits = effective_lum * ((ctx->sdr_white_nits > 10.0f) ? ctx->sdr_white_nits : 80.0f);
     ctx->last_peak_nits = peak_nits;
 
     auto t1 = std::chrono::high_resolution_clock::now();

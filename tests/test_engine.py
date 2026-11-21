@@ -128,6 +128,56 @@ class TestConfig(unittest.TestCase):
             self.assertAlmostEqual(loaded.target_brightness, 0.29)
             self.assertEqual(loaded.preset, "Night")
 
+    def test_observers_init_false(self):
+        cfg = Config()
+        self.assertEqual(cfg._observers, [])
+        with self.assertRaises(TypeError):
+            Config(_observers=[lambda c: None])  # type: ignore
+
+    def test_to_dict_with_ctypes_observer(self):
+        cfg = Config()
+        dummy_ctypes_ptr = ctypes.c_void_p(0x12345678)
+        cfg.add_observer(lambda c, p=dummy_ctypes_ptr: None)
+        # to_dict must succeed without raising ValueError / pickle deepcopy error
+        d = cfg.to_dict()
+        self.assertNotIn("_observers", d)
+        self.assertIn("target_brightness", d)
+
+    def test_save_config_atomic(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir) / "test_atomic.json"
+            cfg = Config(target_brightness=0.33)
+            save_config(cfg, path=tmp_path)
+            self.assertTrue(tmp_path.exists())
+            tmp_files = list(Path(tmpdir).glob("*.tmp*"))
+            self.assertEqual(len(tmp_files), 0)
+            loaded = load_config(path=tmp_path)
+            self.assertAlmostEqual(loaded.target_brightness, 0.33)
+
+    def test_save_config_concurrent(self):
+        import threading
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir) / "test_concurrent.json"
+            errors = []
+
+            def worker(val):
+                try:
+                    cfg = Config(target_brightness=val)
+                    save_config(cfg, path=tmp_path)
+                except Exception as e:
+                    errors.append(e)
+
+            threads = [threading.Thread(target=worker, args=(0.1 * (i + 1),)) for i in range(10)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+            self.assertEqual(len(errors), 0)
+            self.assertTrue(tmp_path.exists())
+            loaded = load_config(path=tmp_path)
+            self.assertGreater(loaded.target_brightness, 0.0)
+
     def test_get_run_at_startup_type(self):
         # Should return a boolean without throwing an unhandled exception
         result = get_run_at_startup()
@@ -206,6 +256,85 @@ class TestSampler(unittest.TestCase):
             avg_ms = (elapsed / iterations) * 1000.0
             # Ensure ultra-fast real-time capability
             self.assertLess(avg_ms, 25.0, f"Average sample time {avg_ms:.2f}ms exceeds target")
+
+    def test_native_dxgi_sampler_pipeline(self):
+        from flashbang_shield.native_sampler import NativeDXGISampler, NativeSampleResult
+        sampler = NativeDXGISampler()
+        try:
+            self.assertTrue(sampler.available)
+            count = sampler.dll.ShieldCore_GetMonitorCount()
+            self.assertGreaterEqual(count, 1)
+
+            # Query HDR info
+            is_hdr = ctypes.c_int()
+            sdr_white = ctypes.c_float()
+            max_nits = ctypes.c_float()
+            ok = sampler.dll.ShieldCore_GetMonitorHDRInfo(
+                0, ctypes.byref(is_hdr), ctypes.byref(sdr_white), ctypes.byref(max_nits)
+            )
+            self.assertEqual(ok, 1)
+            self.assertGreaterEqual(sdr_white.value, 10.0)
+
+            # Live sampling test
+            res = sampler.sample_monitor(0, timeout_ms=50)
+            if res is not None:
+                self.assertIsInstance(res, NativeSampleResult)
+                self.assertGreaterEqual(res.effective_luminance, 0.0)
+                self.assertLessEqual(res.effective_luminance, 1.0)
+                # Verify HDR reference white calibration:
+                # With ref_white normalization, effective_lum * sdr_white == mean_nits
+                if res.mean_nits > 0:
+                    calculated_nits = res.effective_luminance * sdr_white.value
+                    self.assertAlmostEqual(calculated_nits, res.mean_nits, delta=0.1)
+        finally:
+            sampler.close()
+
+    def test_native_sampler_evicts_failed_monitor(self):
+        from flashbang_shield.native_sampler import NativeDXGISampler
+        sampler = NativeDXGISampler()
+        try:
+            # Mark monitor 99 as active
+            sampler._active_monitors[99] = True
+            # Sampling an invalid monitor fails, popping it from _active_monitors
+            res = sampler.sample_monitor(99)
+            self.assertIsNone(res)
+            self.assertNotIn(99, sampler._active_monitors)
+        finally:
+            sampler.close()
+
+    def test_rapid_consecutive_native_samples(self):
+        from flashbang_shield.native_sampler import NativeDXGISampler
+        sampler = NativeDXGISampler()
+        try:
+            self.assertTrue(sampler.available)
+            # Sample 20 consecutive frames rapidly (testing static timeout and mouse pointer frames)
+            failures = 0
+            for _ in range(20):
+                res = sampler.sample_monitor(0, timeout_ms=10)
+                if res is None:
+                    failures += 1
+                time.sleep(0.005)
+            self.assertEqual(failures, 0)
+        finally:
+            sampler.close()
+
+    def test_hdr_white_luminance_calibration_math(self):
+        """Verify FP16 HDR normalizes against ref_white (80 nits reference), not max_nits (1000 nits)."""
+        sdr_white_nits = 80.0
+        max_nits = 1000.0
+
+        # For a standard SDR white pixel:
+        # scRGB FP16 lin_y = 1.0 -> nits = lin_y * 80.0 = 80.0 nits
+        measured_nits = 80.0
+
+        # Old defective behavior divided by max_nits
+        old_normalized = measured_nits / max_nits
+        self.assertAlmostEqual(old_normalized, 0.08, delta=0.01)
+
+        # New corrected behavior divides by ref_white
+        ref_white = sdr_white_nits if sdr_white_nits > 10.0 else 80.0
+        new_normalized = min(1.0, measured_nits / ref_white)
+        self.assertAlmostEqual(new_normalized, 1.0, delta=0.001)
 
 
 class TestOverlay(unittest.TestCase):

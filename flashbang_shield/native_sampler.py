@@ -118,6 +118,7 @@ class NativeDXGISampler:
         res = ShieldLuminanceResult()
         ok = self.dll.ShieldCore_Sample(monitor_id, timeout_ms, ctypes.byref(res))
         if not ok:
+            self._active_monitors.pop(monitor_id, None)
             return None
 
         return NativeSampleResult(

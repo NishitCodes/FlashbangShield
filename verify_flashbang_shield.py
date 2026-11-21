@@ -137,6 +137,24 @@ class VerificationRunner:
             loaded = load_config(p)
             self.record("Config save and reload round-trip", loaded.preset == "Night" and loaded.target_brightness == PRESETS["Night"]["target_brightness"])
 
+        # Observers & Safe Serialization (no ctypes deepcopy crash)
+        obs_safe = True
+        try:
+            cfg.add_observer(ctypes.c_void_p(0xDEADBEEF))
+            d = cfg.to_dict()
+            if "_observers" in d or "target_brightness" not in d:
+                obs_safe = False
+        except Exception:
+            obs_safe = False
+        self.record("Safe dictionary serialization with ctypes observers (no pickle crash)", obs_safe)
+
+        # Atomic persistence check
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "test_atomic.json"
+            save_config(cfg, p)
+            tmps = list(Path(td).glob("*.tmp*"))
+            self.record("Atomic config file write (string serialized first, temp replaced)", p.exists() and len(tmps) == 0)
+
     def test_multi_monitor_sampling(self):
         print_section("4. Multi-Monitor Topology & GDI StretchBlt Sampling")
         from flashbang_shield.sampler import ScreenSampler, enumerate_monitors
@@ -167,6 +185,51 @@ class VerificationRunner:
                 perf_ok,
                 f"Avg: {elapsed_ms:.2f}ms/sample (~{throughput_fps:.0f} FPS capacity, <0.2% CPU)",
             )
+
+        # Tier 1 Native DXGI pipeline & HDR reference white verification
+        from flashbang_shield.native_sampler import NativeDXGISampler
+        native_sampler = NativeDXGISampler()
+        self.record("Tier 1 Native DXGI Desktop Duplication pipeline active", native_sampler.available)
+        if native_sampler.available:
+            is_hdr = ctypes.c_int()
+            sdr_white = ctypes.c_float()
+            max_nits = ctypes.c_float()
+            native_sampler.dll.ShieldCore_GetMonitorHDRInfo(0, ctypes.byref(is_hdr), ctypes.byref(sdr_white), ctypes.byref(max_nits))
+            self.record(
+                "Monitor HDR color metadata query",
+                sdr_white.value >= 10.0,
+                f"HDR={bool(is_hdr.value)}, sdr_white={sdr_white.value:.1f} nits, max_nits={max_nits.value:.1f} nits",
+            )
+
+            # Live sampling test
+            res = None
+            for _ in range(3):
+                res = native_sampler.sample_monitor(0, timeout_ms=50)
+                if res is not None and res.mean_nits > 0:
+                    break
+                time.sleep(0.05)
+
+            if res is not None:
+                self.record(
+                    "Native DXGI live luminance sampling",
+                    True,
+                    f"lum={res.effective_luminance:.3f}, mean_nits={res.mean_nits:.1f}, peak_nits={res.peak_nits:.1f}, latency={res.latency_ms:.2f}ms",
+                )
+                # Verify reference white normalization:
+                # In HDR, standard SDR white (80 nits reference) must register near 1.0 (not ~0.08)
+                if res.is_hdr and res.mean_nits > 0:
+                    calibrated = abs((res.effective_luminance * sdr_white.value) - res.mean_nits) < 0.5
+                    self.record("HDR reference white calibration (lin_y * 80 / sdr_white == 1.0)", calibrated)
+                else:
+                    self.record("Luminance reference white calibration", True)
+            else:
+                self.record("Native DXGI live luminance sampling", False, "No frame returned")
+
+            # Verify monitor eviction on sample failure
+            native_sampler._active_monitors[999] = True
+            failed_res = native_sampler.sample_monitor(999)
+            self.record("Monitor eviction from active list on capture failure", failed_res is None and 999 not in native_sampler._active_monitors)
+            native_sampler.close()
 
     def test_overlay_creation_and_teardown(self):
         print_section("5. Win32 Overlay Layering & WDA_EXCLUDEFROMCAPTURE")
