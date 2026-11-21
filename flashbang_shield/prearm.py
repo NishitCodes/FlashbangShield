@@ -20,10 +20,12 @@ from typing import Callable, Optional, Tuple
 logger = logging.getLogger("flashbang_shield.prearm")
 
 user32 = ctypes.windll.user32 if hasattr(ctypes, "windll") else None
+kernel32 = ctypes.windll.kernel32 if hasattr(ctypes, "windll") else None
 
 EVENT_SYSTEM_FOREGROUND = 0x0003
 WINEVENT_OUTOFCONTEXT = 0x0000
 WINEVENT_SKIPOWNPROCESS = 0x0002
+WM_QUIT = 0x0012
 
 WINEVENTPROC = ctypes.WINFUNCTYPE(
     None,
@@ -85,6 +87,7 @@ class PreArmManager:
         self._hook_proc = None
         self._running = False
         self._thread = None
+        self._thread_id = None
 
     def start(self):
         """Start listening for foreground window events on a dedicated message thread."""
@@ -95,6 +98,9 @@ class PreArmManager:
         self._thread.start()
 
     def _run_hook_thread(self):
+        if kernel32:
+            self._thread_id = kernel32.GetCurrentThreadId()
+
         def _callback(hHook, event, hwnd, idObject, idChild, dwEventThread, dwmsEventTime):
             if event == EVENT_SYSTEM_FOREGROUND and hwnd:
                 known_lum = self.cache.get(hwnd)
@@ -125,8 +131,12 @@ class PreArmManager:
             user32.DispatchMessageW(ctypes.byref(msg))
 
         if self._hook_handle:
-            user32.UnhookWinEvent(self._hook_handle)
+            try:
+                user32.UnhookWinEvent(self._hook_handle)
+            except Exception:
+                pass
             self._hook_handle = None
+        self._thread_id = None
 
     def update_active_window_luminance(self, luminance: float):
         """Record current active window's luminance into LRU cache."""
@@ -141,9 +151,17 @@ class PreArmManager:
     def stop(self):
         """Stop hook and thread."""
         self._running = False
+        if self._thread_id and user32:
+            try:
+                user32.PostThreadMessageW(self._thread_id, WM_QUIT, 0, 0)
+            except Exception:
+                pass
         if user32 and self._hook_handle:
             try:
                 user32.UnhookWinEvent(self._hook_handle)
             except Exception:
                 pass
             self._hook_handle = None
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=1.0)
+            self._thread = None

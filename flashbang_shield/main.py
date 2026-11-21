@@ -273,6 +273,12 @@ def main():
         help="Start minimized directly to the system tray.",
     )
     parser.add_argument(
+        "--background",
+        "-b",
+        action="store_true",
+        help="Launch detached in the background without blocking the console terminal.",
+    )
+    parser.add_argument(
         "--preset",
         choices=list(PRESETS.keys()),
         help="Launch with specific preset active (Day, Evening, Night, Ultra-Dim).",
@@ -290,6 +296,22 @@ def main():
     )
 
     args = parser.parse_args()
+
+    if args.background:
+        import subprocess
+        child_args = [arg for arg in sys.argv[1:] if arg not in ("--background", "-b")]
+        pythonw_path = Path(sys.executable).parent / "pythonw.exe"
+        exe = str(pythonw_path) if pythonw_path.exists() else sys.executable
+        cmd = [exe, "-m", "flashbang_shield.main"] + child_args
+        DETACHED_PROCESS = 0x00000008
+        CREATE_NEW_PROCESS_GROUP = 0x00000200
+        subprocess.Popen(
+            cmd,
+            creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+            close_fds=True,
+        )
+        print("Flashbang Shield launched detached in the background. Terminal is released.")
+        return
 
     setup_logging(debug=args.debug)
 

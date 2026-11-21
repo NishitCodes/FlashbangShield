@@ -5,9 +5,12 @@ Listens for:
 - Win + Alt + Up (and fallback Ctrl + Alt + Up): Increase Brightness (+5%)
 - Win + Alt + Down (and fallback Ctrl + Alt + Down): Decrease Brightness (-5%)
 
-Uses low-level Windows keyboard hook (WH_KEYBOARD_LL) to reliably intercept
-Win+Alt combinations without collision with Windows Game Bar or OEM overlays,
-dispatches callbacks non-blockingly to protect hook responsiveness.
+Uses native Windows RegisterHotKey API on a dedicated background message thread.
+Unlike WH_KEYBOARD_LL hooks, RegisterHotKey is completely non-intrusive:
+- Does NOT intercept or process arbitrary keystrokes
+- Adds 0 ms latency to normal typing
+- Never hangs, drops keys, or interferes with PowerShell/terminals/editors
+- Native OS dispatch directly delivers WM_HOTKEY messages
 """
 
 import ctypes
@@ -19,37 +22,42 @@ from typing import Callable, Optional
 
 logger = logging.getLogger("FlashbangShield.Hotkeys")
 
+user32 = ctypes.windll.user32 if hasattr(ctypes, "windll") else None
+kernel32 = ctypes.windll.kernel32 if hasattr(ctypes, "windll") else None
+
+if user32:
+    user32.RegisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.UINT, wintypes.UINT]
+    user32.RegisterHotKey.restype = wintypes.BOOL
+    user32.UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.UnregisterHotKey.restype = wintypes.BOOL
+    user32.PostThreadMessageW.argtypes = [wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    user32.PostThreadMessageW.restype = wintypes.BOOL
+
 # Windows Constants
-WH_KEYBOARD_LL = 13
-WM_KEYDOWN = 0x0100
-WM_SYSKEYDOWN = 0x0104
+WM_HOTKEY = 0x0312
 WM_QUIT = 0x0012
+
+MOD_ALT = 0x0001
+MOD_CONTROL = 0x0002
+MOD_SHIFT = 0x0004
+MOD_WIN = 0x0008
+MOD_NOREPEAT = 0x4000  # Windows 7+ flag: do not generate multiple hotkey messages when key is held down
 
 VK_UP = 0x26
 VK_DOWN = 0x28
 VK_O = 0x4F
 
-VK_LWIN = 0x5B
-VK_RWIN = 0x5C
-VK_CONTROL = 0x11
-VK_MENU = 0x12  # Alt key
-
-# KBDLLHOOKSTRUCT structure
-class KBDLLHOOKSTRUCT(ctypes.Structure):
-    _fields_ = [
-        ("vkCode", wintypes.DWORD),
-        ("scanCode", wintypes.DWORD),
-        ("flags", wintypes.DWORD),
-        ("time", wintypes.DWORD),
-        ("dwExtraInfo", ctypes.c_ulong),
-    ]
-
-# Hook callback type
-HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+# Hotkey Identifier Constants
+ID_TOGGLE_WIN_ALT = 101
+ID_TOGGLE_CTRL_ALT = 102
+ID_BRIGHT_UP_WIN_ALT = 103
+ID_BRIGHT_UP_CTRL_ALT = 104
+ID_BRIGHT_DOWN_WIN_ALT = 105
+ID_BRIGHT_DOWN_CTRL_ALT = 106
 
 
 class HotkeyManager:
-    """Manages global hotkey listening on Windows."""
+    """Manages non-intrusive global hotkey registration on Windows using RegisterHotKey."""
 
     def __init__(
         self,
@@ -63,9 +71,8 @@ class HotkeyManager:
 
         self._thread: Optional[threading.Thread] = None
         self._thread_id: Optional[int] = None
-        self._hook_handle = None
         self._running = threading.Event()
-        self._c_callback = None  # Prevent garbage collection of callback
+        self._registered_ids = []
 
         # Debounce tracking
         self._last_trigger_time = 0.0
@@ -73,23 +80,34 @@ class HotkeyManager:
 
     def start(self):
         """Start global hotkey listener in background thread."""
+        if not user32:
+            logger.warning("Windows user32 not available; hotkeys disabled.")
+            return
+
         if self._thread and self._thread.is_alive():
             return
+
         self._running.set()
+        ready_evt = threading.Event()
         self._thread = threading.Thread(
-            target=self._hook_loop,
+            target=self._hotkey_loop,
+            args=(ready_evt,),
             name="FlashbangShieldHotkeyThread",
             daemon=True,
         )
         self._thread.start()
-        logger.info("Global hotkeys listener started (Win+Alt+O, Win+Alt+Up, Win+Alt+Down)")
+        ready_evt.wait(timeout=2.0)
+        logger.info("Global hotkeys listener started (Win/Ctrl+Alt+O, Win/Ctrl+Alt+Up/Down)")
 
     def stop(self):
         """Stop global hotkey listener."""
         self._running.clear()
-        if self._thread_id:
-            user32 = ctypes.windll.user32
-            user32.PostThreadMessageW(self._thread_id, WM_QUIT, 0, 0)
+        if self._thread_id and user32:
+            try:
+                user32.PostThreadMessageW(self._thread_id, WM_QUIT, 0, 0)
+            except Exception as e:
+                logger.debug(f"Error posting WM_QUIT to hotkey thread: {e}")
+
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=1.0)
             self._thread = None
@@ -100,7 +118,7 @@ class HotkeyManager:
         return self._running.is_set() and (self._thread is not None and self._thread.is_alive())
 
     def _dispatch(self, callback: Optional[Callable[[], None]]):
-        """Execute callback asynchronously so hook returns immediately."""
+        """Execute callback asynchronously so hotkey message loop never blocks."""
         if not callback:
             return
         now = time.perf_counter()
@@ -116,67 +134,65 @@ class HotkeyManager:
 
         threading.Thread(target=_runner, daemon=True).start()
 
-    def _hook_loop(self):
-        """Message loop and hook procedure."""
-        user32 = ctypes.windll.user32
-        kernel32 = ctypes.windll.kernel32
+    def _hotkey_loop(self, ready_evt: threading.Event):
+        """Message loop for RegisterHotKey."""
+        if not user32 or not kernel32:
+            ready_evt.set()
+            return
 
         self._thread_id = kernel32.GetCurrentThreadId()
 
-        def _is_key_down(vk: int) -> bool:
-            return bool(user32.GetAsyncKeyState(vk) & 0x8000)
+        # Force thread message queue creation
+        msg = wintypes.MSG()
+        user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 0)
 
-        def _hook_proc(nCode, wParam, lParam):
-            if nCode >= 0 and wParam in (WM_KEYDOWN, WM_SYSKEYDOWN):
-                kb = KBDLLHOOKSTRUCT.from_address(lParam)
-                vk = kb.vkCode
+        # Definitions: (ID, modifiers, vkCode, description)
+        hotkey_definitions = [
+            (ID_TOGGLE_WIN_ALT, MOD_WIN | MOD_ALT | MOD_NOREPEAT, VK_O, "Win+Alt+O"),
+            (ID_TOGGLE_CTRL_ALT, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_O, "Ctrl+Alt+O"),
+            (ID_BRIGHT_UP_WIN_ALT, MOD_WIN | MOD_ALT | MOD_NOREPEAT, VK_UP, "Win+Alt+Up"),
+            (ID_BRIGHT_UP_CTRL_ALT, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_UP, "Ctrl+Alt+Up"),
+            (ID_BRIGHT_DOWN_WIN_ALT, MOD_WIN | MOD_ALT | MOD_NOREPEAT, VK_DOWN, "Win+Alt+Down"),
+            (ID_BRIGHT_DOWN_CTRL_ALT, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_DOWN, "Ctrl+Alt+Down"),
+        ]
 
-                win_down = _is_key_down(VK_LWIN) or _is_key_down(VK_RWIN)
-                alt_down = _is_key_down(VK_MENU)
-                ctrl_down = _is_key_down(VK_CONTROL)
+        self._registered_ids = []
+        for hid, mod, vk, desc in hotkey_definitions:
+            ret = user32.RegisterHotKey(None, hid, mod, vk)
+            if ret:
+                self._registered_ids.append(hid)
+                logger.debug(f"Registered hotkey: {desc} (ID {hid})")
+            else:
+                err = ctypes.GetLastError()
+                logger.debug(f"Could not register hotkey {desc} (ID {hid}, Win32 error {err})")
 
-                # Check modifier match: Win+Alt or Ctrl+Alt
-                has_modifiers = (win_down and alt_down) or (ctrl_down and alt_down)
-
-                if has_modifiers:
-                    if vk == VK_O:
-                        logger.debug("Hotkey triggered: Toggle Shield (Win/Ctrl + Alt + O)")
-                        self._dispatch(self.on_toggle)
-                        return 1  # Handled: suppress key event
-                    elif vk == VK_UP:
-                        logger.debug("Hotkey triggered: Brightness Up (Win/Ctrl + Alt + Up)")
-                        self._dispatch(self.on_brightness_up)
-                        return 1  # Handled
-                    elif vk == VK_DOWN:
-                        logger.debug("Hotkey triggered: Brightness Down (Win/Ctrl + Alt + Down)")
-                        self._dispatch(self.on_brightness_down)
-                        return 1  # Handled
-
-            return user32.CallNextHookEx(self._hook_handle, nCode, wParam, lParam)
-
-        self._c_callback = HOOKPROC(_hook_proc)
-        self._hook_handle = user32.SetWindowsHookExW(
-            WH_KEYBOARD_LL,
-            self._c_callback,
-            None,
-            0,
-        )
-
-        if not self._hook_handle:
-            err = ctypes.GetLastError()
-            logger.warning(f"Failed to install keyboard hook (error {err}). Hotkeys may be unavailable.")
-            return
+        ready_evt.set()
 
         try:
-            msg = wintypes.MSG()
             while self._running.is_set():
                 res = user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
                 if res <= 0:  # WM_QUIT or error
                     break
+
+                if msg.message == WM_HOTKEY:
+                    hid = msg.wParam
+                    if hid in (ID_TOGGLE_WIN_ALT, ID_TOGGLE_CTRL_ALT):
+                        logger.debug("Hotkey triggered: Toggle Shield")
+                        self._dispatch(self.on_toggle)
+                    elif hid in (ID_BRIGHT_UP_WIN_ALT, ID_BRIGHT_UP_CTRL_ALT):
+                        logger.debug("Hotkey triggered: Brightness Up")
+                        self._dispatch(self.on_brightness_up)
+                    elif hid in (ID_BRIGHT_DOWN_WIN_ALT, ID_BRIGHT_DOWN_CTRL_ALT):
+                        logger.debug("Hotkey triggered: Brightness Down")
+                        self._dispatch(self.on_brightness_down)
+
                 user32.TranslateMessage(ctypes.byref(msg))
                 user32.DispatchMessageW(ctypes.byref(msg))
         finally:
-            if self._hook_handle:
-                user32.UnhookWindowsHookEx(self._hook_handle)
-                self._hook_handle = None
+            for hid in self._registered_ids:
+                try:
+                    user32.UnregisterHotKey(None, hid)
+                except Exception:
+                    pass
+            self._registered_ids.clear()
             self._thread_id = None
