@@ -26,6 +26,8 @@ WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_NOACTIVATE = 0x08000000
 
 LWA_ALPHA = 0x00000002
+SW_HIDE = 0
+SW_SHOWNOACTIVATE = 4
 SWP_NOSIZE = 0x0001
 SWP_NOMOVE = 0x0002
 SWP_NOACTIVATE = 0x0010
@@ -68,6 +70,9 @@ if user32:
         ctypes.c_int, ctypes.c_int, wintypes.UINT
     ]
     user32.SetWindowPos.restype = wintypes.BOOL
+
+    user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.ShowWindow.restype = wintypes.BOOL
 
     user32.DestroyWindow.argtypes = [wintypes.HWND]
     user32.DestroyWindow.restype = wintypes.BOOL
@@ -182,7 +187,7 @@ class OverlayWindow:
         # Set initial alpha = 0 (completely transparent)
         user32.SetLayeredWindowAttributes(self.hwnd, 0, 0, LWA_ALPHA)
 
-        # Position and display without taking focus
+        # Position without showing initially (start hidden to preserve MPO/VRR/battery)
         user32.SetWindowPos(
             self.hwnd,
             HWND_TOPMOST,
@@ -190,13 +195,25 @@ class OverlayWindow:
             self.monitor.y,
             self.monitor.width,
             self.monitor.height,
-            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
         )
+        user32.ShowWindow(self.hwnd, SW_HIDE)
+        self.is_visible = False
 
     def set_opacity(self, opacity: float):
-        """Set overlay opacity in range [0.0, 1.0]."""
+        """Set overlay opacity in range [0.0, 1.0]. Hides window when idle for MPO/VRR/battery."""
         self.opacity = max(0.0, min(1.0, float(opacity)))
         if self.hwnd and user32:
+            if self.opacity <= 0.002:
+                if self.is_visible:
+                    user32.ShowWindow(self.hwnd, SW_HIDE)
+                    self.is_visible = False
+                return
+
+            if not self.is_visible:
+                user32.ShowWindow(self.hwnd, SW_SHOWNOACTIVATE)
+                self.is_visible = True
+
             alpha = int(self.opacity * 255.0)
             user32.SetLayeredWindowAttributes(self.hwnd, 0, alpha, LWA_ALPHA)
 

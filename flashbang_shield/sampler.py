@@ -16,6 +16,14 @@ SRCCOPY = 0x00CC0020
 HALFTONE = 4
 DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
 
+# Exact sRGB EOTF lookup table (IEC 61966-2-1) mapping uint8 [0..255] to linear light [0.0..1.0]
+# Prevents mid-tone overestimation (e.g., sRGB 128 evaluates to true ~21.4% physical light)
+SRGB_TO_LINEAR = np.array([
+    ((i / 255.0) / 12.92) if (i / 255.0) <= 0.04045
+    else (((i / 255.0) + 0.055) / 1.055) ** 2.4
+    for i in range(256)
+], dtype=np.float32)
+
 user32 = ctypes.windll.user32 if hasattr(ctypes, "windll") else None
 gdi32 = ctypes.windll.gdi32 if hasattr(ctypes, "windll") else None
 
@@ -47,6 +55,9 @@ if user32 and gdi32:
 
     gdi32.SetStretchBltMode.argtypes = [wintypes.HDC, ctypes.c_int]
     gdi32.SetStretchBltMode.restype = ctypes.c_int
+
+    gdi32.SetBrushOrgEx.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int, ctypes.POINTER(wintypes.POINT)]
+    gdi32.SetBrushOrgEx.restype = wintypes.BOOL
 
     gdi32.StretchBlt.argtypes = [
         wintypes.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
@@ -233,13 +244,15 @@ class _MonitorSamplerContext:
         )
         self.old_bmp = gdi32.SelectObject(self.hdc_mem, self.h_bmp)
         gdi32.SetStretchBltMode(self.hdc_mem, HALFTONE)
+        if hasattr(gdi32, "SetBrushOrgEx"):
+            gdi32.SetBrushOrgEx(self.hdc_mem, 0, 0, None)
 
         # Buffer view
         byte_count = self.resolution * self.resolution * 4
         self.buffer = (ctypes.c_uint8 * byte_count).from_address(self.p_bits.value)
 
     def sample_luminance(self, curve_gamma: float = 2.0) -> float:
-        """Sample monitor area, downsample with StretchBlt, and compute perceived luminance."""
+        """Sample monitor area, downsample with StretchBlt, and compute linear perceived luminance."""
         if self.hdc_screen is None or not self.p_bits.value:
             return 0.3  # Synthetic fallback
 
@@ -261,28 +274,22 @@ class _MonitorSamplerContext:
         # Convert 32-bit BGRA buffer to numpy array
         arr = np.frombuffer(self.buffer, dtype=np.uint8).reshape((self.resolution, self.resolution, 4))
 
-        # ITU-R BT.709 perceived luminance formula: Y = 0.2126*R + 0.7152*G + 0.0722*B
+        # True linear physical light conversion via precomputed sRGB EOTF LUT
         # Pixel order in Windows 32-bit DIB is BGRA (0=B, 1=G, 2=R)
-        b = arr[:, :, 0].astype(np.float32) * (0.0722 / 255.0)
-        g = arr[:, :, 1].astype(np.float32) * (0.7152 / 255.0)
-        r = arr[:, :, 2].astype(np.float32) * (0.2126 / 255.0)
-        lum_map = r + g + b
+        b_lin = SRGB_TO_LINEAR[arr[:, :, 0]]
+        g_lin = SRGB_TO_LINEAR[arr[:, :, 1]]
+        r_lin = SRGB_TO_LINEAR[arr[:, :, 2]]
+
+        # ITU-R BT.709 linear perceived luminance: Y_lin = 0.2126*R_lin + 0.7152*G_lin + 0.0722*B_lin
+        lum_map = 0.2126 * r_lin + 0.7152 * g_lin + 0.0722 * b_lin
 
         mean_lum = float(np.mean(lum_map))
         p90_lum = float(np.percentile(lum_map, 90))
 
-        # Flashbang sensitivity: weighted combination of mean luminance and 90th percentile.
-        # This catches localized bright windows/flashes immediately even if partially letterboxed.
-        raw_lum = 0.65 * mean_lum + 0.35 * p90_lum
-
-        # Apply Gammy human perceptual response curve (lightness sensitivity)
+        # Flashbang sensitivity: weighted combination of linear mean and 90th percentile
+        raw_lum = 0.60 * mean_lum + 0.40 * p90_lum
         clamped = max(0.0, min(1.0, raw_lum))
-        if curve_gamma != 1.0 and clamped > 0.0:
-            perceived = clamped ** (1.0 / curve_gamma)
-        else:
-            perceived = clamped
-
-        return float(perceived)
+        return float(clamped)
 
     def close(self):
         """Release GDI device contexts and bitmaps."""

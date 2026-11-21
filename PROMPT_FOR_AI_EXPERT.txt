@@ -1,0 +1,29 @@
+You are an elite Windows systems programmer, graphics pipeline engineer, and human factors / vision science researcher. 
+
+I have attached a detailed technical document `AI_CONSULTATION_CONTEXT.md` describing our open-source software: **Flashbang Shield**.
+
+### Background:
+Flashbang Shield solves the classic "dark tab to blinding white tab" visual shock problem on Windows by continuously sampling screen luminance and smoothly applying a click-through transparent layered overlay with `WDA_EXCLUDEFROMCAPTURE` and biologically-tuned asymmetric easing (~180ms attack flash suppression, ~600ms decay relaxation).
+
+### What I need from you:
+Please review the architecture and code in `AI_CONSULTATION_CONTEXT.md` and provide an exhaustive, senior-level technical critique and roadmap for improvement. Specifically address:
+
+1. **Hardware Mouse Cursor Glare**:
+   - Because Windows hardware cursors render on the GPU scanout layer *above* `WS_EX_TOPMOST` layered windows, the white cursor stays bright while the screen dims. What is the lowest-latency, cleanest way to dim or invert the cursor synchronously (e.g. Magnification API `MagSetColorTransform`, custom cursor scheme swap, or other Win32 methods) without cursor lag or flicker?
+
+2. **HDR (High Dynamic Range) & Wide Color Gamut**:
+   - How should our luminance sampling and overlay math be updated for Windows 11 HDR displays (where SDR is mapped into an HDR canvas with 80–1000+ nits peaks)? What happens to GDI `StretchBlt` under HDR, and how should we handle Windows Advanced Color?
+
+3. **Capture Pipeline Evolution (GDI vs DXGI vs Windows Graphics Capture)**:
+   - What are the real-world failure modes of our GDI downsampling approach (e.g. exclusive fullscreen games, DRM protected media, mixed DPI multi-monitors)? Provide the ideal fallback pipeline architecture and how to handle them.
+
+4. **Hybrid Overlay + Hardware Backlight (DDC/CI & WMI)**:
+   - Provide concrete algorithmic pseudocode for a dual-tier hybrid controller: the software overlay reacts instantly (0–180ms) to stop the eye shock, while a background thread slowly shifts physical monitor backlight (DDC/CI / WMI) over 2–4 seconds, seamlessly fading out the overlay as the physical backlight takes over.
+
+5. **Human Visual Perception & Algorithmic Refinement**:
+   - Critique our luminance formula ($0.6 \times \text{mean} + 0.4 \times p90$), perceptual power curve ($E^{\gamma \cdot 0.75}$), and time-constant exponential smoothing ($\alpha = 1 - e^{-\Delta t / \tau}$). How can we refine this based on the human contrast sensitivity function (CSF) and pupillary light reflex curves?
+
+6. **Predictive Pre-arming**:
+   - How can we implement low-overhead heuristic or hook-based anticipation (e.g. detecting `Ctrl+Tab`, browser link clicks, or navigation events) to pre-arm or begin dampening 30–50ms *before* the white page renders?
+
+Please provide concrete code snippets, architectural diagrams, and actionable recommendations.

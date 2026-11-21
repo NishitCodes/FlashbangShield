@@ -5,8 +5,10 @@ and fast asymmetric easing.
 """
 
 from .config import Config, ShieldConfig, PRESETS, load_config, save_config, set_run_at_startup, get_run_at_startup
+from .cursor import CursorDimmer
 from .sampler import ScreenSampler, MonitorInfo, enumerate_monitors
 from .overlay import OverlayManager, OverlayWindow
+from .prearm import PreArmManager
 from .engine import ShieldEngine, EngineStats
 from .hotkeys import HotkeyManager
 from .tray import TrayIcon
@@ -21,6 +23,8 @@ __all__ = [
     "save_config",
     "set_run_at_startup",
     "get_run_at_startup",
+    "CursorDimmer",
+    "PreArmManager",
     "ScreenSampler",
     "MonitorInfo",
     "enumerate_monitors",

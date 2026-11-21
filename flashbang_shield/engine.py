@@ -15,7 +15,9 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from .config import Config, PRESETS, load_config, save_config
+from .cursor import CursorDimmer
 from .overlay import OverlayManager
+from .prearm import PreArmManager
 from .sampler import MonitorInfo, ScreenSampler
 
 
@@ -52,6 +54,12 @@ class ShieldEngine:
         self.config = config or load_config()
         self.sampler = ScreenSampler(resolution=self.config.sample_resolution)
         self.overlay = OverlayManager()
+        self.cursor_dimmer = CursorDimmer()
+        self.prearm = PreArmManager(on_prearm_callback=self._on_prearm_event)
+
+        # Predictive pre-arm and temporal dynamics state
+        self._reflex_clamp_until = 0.0
+        self._decay_hold_until = 0.0
 
         # Engine state
         self._running = threading.Event()
@@ -75,6 +83,12 @@ class ShieldEngine:
         # Connect config observers
         self.config.add_observer(self._on_config_changed)
 
+    def _on_prearm_event(self, known_lum: Optional[float]):
+        """Called when user switches window focus (WinEvent hook)."""
+        now = time.perf_counter()
+        # Arm 1-frame reflex clamp for 600 ms
+        self._reflex_clamp_until = now + 0.60
+
     def _on_config_changed(self, cfg: Config):
         """Handle dynamic configuration updates."""
         self._stats.target_luminance = cfg.target_brightness
@@ -86,19 +100,26 @@ class ShieldEngine:
         """Start the engine background processing loop."""
         if self._thread and self._thread.is_alive():
             return
+        self.prearm.start()
         self._running.set()
         self._paused.clear()
         self._thread = threading.Thread(target=self._loop, name="FlashbangShieldEngineThread", daemon=True)
         self._thread.start()
 
     def stop(self):
-        """Stop the engine and gracefully restore screen brightness."""
+        """Stop the engine and gracefully restore screen brightness and cursors."""
         self._running.clear()
+        self.prearm.stop()
+        self.cursor_dimmer.restore_defaults()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=1.5)
             self._thread = None
         # Fade overlay out completely
         self.overlay.set_opacity(0.0)
+
+    def close(self):
+        """Synonym for stop() to support standard context managers and test cleanup."""
+        self.stop()
 
     def toggle_enabled(self) -> bool:
         """Toggle active state on/off and return new state."""
@@ -179,39 +200,53 @@ class ShieldEngine:
     # --- Gammy Perception & Easing Calculations ---
 
     def _compute_target_dimming(self, sampled_lum: float, prev_lum: float) -> Tuple[float, bool]:
-        """Calculate target dimming opacity using Gammy non-linear human response.
+        """Calculate target dimming opacity using Log-Domain Weber-Fechner & Softplus compression.
 
         Incorporates:
-        1. Min/Max brightness boundaries
-        2. Non-linear perceived excess curve (e.g. power gamma)
-        3. Sudden flashbang jump detection
+        1. Exact physical linear luminance from linearized sRGB
+        2. Softplus smooth knee dynamic range compression (zero threshold chatter)
+        3. Sudden flashbang surge detection (>0.35 log units or >0.25 linear jump)
         """
-        target_comfort = self.config.target_brightness
+        target_comfort = max(0.01, self.config.target_brightness)
         effective_max_dimming = min(self.config.max_dimming, 1.0 - self.config.min_brightness)
 
-        # 1. Sudden flashbang detection: rapid jump in luminance within a single frame
-        delta_lum = sampled_lum - prev_lum
-        is_flashbang = delta_lum >= self.config.flash_threshold and sampled_lum > target_comfort
+        # 1. Sudden flashbang surge detection in log & linear space
+        sampled_safe = max(0.005, sampled_lum)
+        prev_safe = max(0.005, prev_lum)
+        log_surge = math.log10(sampled_safe) - math.log10(prev_safe)
+        linear_surge = sampled_lum - prev_lum
+
+        now = time.perf_counter()
+        is_prearmed = now < self._reflex_clamp_until
+        surge_threshold = 0.25 if is_prearmed else 0.40
+
+        is_flashbang = (log_surge >= surge_threshold or linear_surge >= self.config.flash_threshold) and sampled_lum > target_comfort
 
         if is_flashbang:
             # Immediate flash suppression ceiling
             return effective_max_dimming, True
 
-        # 2. Gammy adaptive response: if current luminance exceeds user's comfort level
+        # 2. Content is at or below target comfort level: no dimming required
         if sampled_lum <= target_comfort:
-            # Content is comfortable or dark; no dimming overlay required
             return 0.0, False
 
-        # Non-linear excess calculation: how far above comfort luminance is the screen?
-        excess_span = max(0.01, 1.0 - target_comfort)
-        excess_ratio = min(1.0, (sampled_lum - target_comfort) / excess_span)
+        # 3. Log-domain soft-knee dynamic range compression for excess glare
+        delta_log = math.log10(sampled_safe) - math.log10(target_comfort)
 
-        # Apply Gammy non-linear perception power curve
-        # Human visual sensitivity escalates sharply as brightness nears glaring levels
-        gamma = max(1.0, self.config.curve_gamma)
-        curve_factor = excess_ratio ** (gamma * 0.75)
+        # Softplus smooth knee: excess_log = k * ln(1 + exp(delta_log / k))
+        k = 0.15
+        scaled = delta_log / k
+        if scaled > 40.0:
+            excess_log = delta_log
+        elif scaled < -20.0:
+            excess_log = 0.0
+        else:
+            excess_log = k * math.log(1.0 + math.exp(scaled))
 
-        target_dim = curve_factor * effective_max_dimming
+        # Optical compression ratio (r = 0.85)
+        # Transmittance G = 10^(-r * excess_log)
+        g_target = max(0.05, 10.0 ** (-0.85 * excess_log))
+        target_dim = (1.0 - g_target) * effective_max_dimming
         return max(0.0, min(effective_max_dimming, target_dim)), False
 
     def _apply_asymmetric_easing(
@@ -219,27 +254,49 @@ class ShieldEngine:
         current_dim: float,
         target_dim: float,
         dt: float,
+        is_flashbang: bool = False,
     ) -> float:
-        """Apply Gammy fast asymmetric easing.
+        """Apply biologically-tuned 3-phase temporal dynamics:
 
-        Attack: ~180ms fast flash suppression when target_dim > current_dim
-        Decay / Relaxation: ~600ms gradual relaxation when target_dim <= current_dim
-        Continuous exponential smoothing: alpha = 1 - exp(-dt / tau)
+        1. Reflex Shock Clamp (~25ms / 1-2 frames): active on flashbang surge or pre-arm
+        2. Smooth Adaptive Attack (~150ms): for gradual brightening
+        3. Hysteresis Hold (200ms) + Biphasic Decay (~550ms fast, ~2200ms slow): prevents pumping
         """
         if dt <= 0:
             return current_dim
 
-        if target_dim > current_dim:
-            # Attack phase (suppressing bright flashbang) - FAST response
-            tau = max(0.02, self.config.attack_speed_ms / 1000.0)
-        else:
-            # Decay / Relaxation phase (recovering to normal) - SMOOTH slow recovery
-            tau = max(0.05, self.config.decay_speed_ms / 1000.0)
+        now = time.perf_counter()
 
-        # Time-independent exponential smoothing
-        alpha = 1.0 - math.exp(-dt / tau)
-        new_dim = current_dim + (target_dim - current_dim) * alpha
-        return max(0.0, min(1.0, new_dim))
+        if target_dim > current_dim:
+            # Attack phase (brightening screen)
+            self._decay_hold_until = now + 0.20  # Reset 200ms hysteresis hold timer
+
+            if is_flashbang or (now < self._reflex_clamp_until and (target_dim - current_dim) > 0.20):
+                # Reflex Shock Clamp: intercept flash within 1-2 frames
+                tau = 0.025
+            else:
+                # Smooth Adaptive Attack
+                tau = max(0.02, self.config.attack_speed_ms / 1000.0)
+
+            alpha = 1.0 - math.exp(-dt / tau)
+            new_dim = current_dim + (target_dim - current_dim) * alpha
+            return max(0.0, min(1.0, new_dim))
+        else:
+            # Decay phase (screen getting darker)
+            # Hysteresis hold: hold dimming for 200ms to eliminate scrolling pump
+            if now < self._decay_hold_until:
+                return current_dim
+
+            # Biphasic relaxation: 65% fast release (~550ms), 35% slow pupillary tail (~2200ms)
+            tau_fast = max(0.05, self.config.decay_speed_ms / 1000.0)
+            tau_slow = tau_fast * 3.5
+
+            alpha_fast = 1.0 - math.exp(-dt / tau_fast)
+            alpha_slow = 1.0 - math.exp(-dt / tau_slow)
+            alpha_biphasic = 0.65 * alpha_fast + 0.35 * alpha_slow
+
+            new_dim = current_dim + (target_dim - current_dim) * alpha_biphasic
+            return max(0.0, min(1.0, new_dim))
 
     # --- Core Heartbeat Loop ---
 
@@ -300,7 +357,7 @@ class ShieldEngine:
                         is_flash_detected = True
 
                     curr_dim = self._current_dimming.get(m_id, 0.0)
-                    new_dim = self._apply_asymmetric_easing(curr_dim, target_dim, dt)
+                    new_dim = self._apply_asymmetric_easing(curr_dim, target_dim, dt, is_flashbang=is_fb)
                     self._current_dimming[m_id] = new_dim
                     dimming_values.append(new_dim)
 
@@ -327,10 +384,16 @@ class ShieldEngine:
                     is_flash_detected = True
 
                 self._overall_current_dimming = self._apply_asymmetric_easing(
-                    self._overall_current_dimming, target_dim, dt
+                    self._overall_current_dimming, target_dim, dt, is_flashbang=is_fb
                 )
                 self.overlay.set_opacity(self._overall_current_dimming)
                 overall_lum = lum
+
+            # Hardware mouse cursor zero-lag attenuation sync
+            self.cursor_dimmer.update(self._overall_current_dimming)
+
+            # Record active window luminance into LRU cache for pre-arm prediction
+            self.prearm.update_active_window_luminance(overall_lum)
 
             # Telemetry record
             with self._lock:
