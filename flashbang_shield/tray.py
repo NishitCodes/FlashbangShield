@@ -11,6 +11,7 @@ Provides quick tray menu access to:
 """
 
 import logging
+from pathlib import Path
 import threading
 from typing import Callable, Optional
 from PIL import Image, ImageDraw
@@ -29,52 +30,73 @@ logger = logging.getLogger("FlashbangShield.Tray")
 def create_tray_image(enabled: bool = True, dim_percent: int = 0) -> Image.Image:
     """Generate dynamic tray icon with live status dot."""
     size = 64
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-
-    # Outer shield shape
     pad = 6
-    w = size - 2 * pad
-    h = size - 2 * pad
-    cx = size // 2
-    top = pad
-    bottom = size - pad
-    left = pad
-    right = size - pad
-    mid_y = int(pad + h * 0.55)
+    asset_path = Path(__file__).resolve().parent / "assets" / "icon.png"
 
-    shield_pts = [
-        (left, top),
-        (right, top),
-        (right, mid_y),
-        (cx, bottom),
-        (left, mid_y),
-    ]
+    img = None
+    if asset_path.exists():
+        try:
+            base_img = Image.open(asset_path).convert("RGBA")
+            img = base_img.resize((size, size), Image.Resampling.LANCZOS)
+            if not enabled:
+                # Dim and desaturate slightly when shield is paused
+                r, g, b, a = img.split()
+                gray = Image.merge("RGB", (r, g, b)).convert("L")
+                dimmed = Image.merge("RGBA", (gray, gray, gray, a))
+                img = Image.blend(img, dimmed, 0.65)
+        except Exception as e:
+            logger.debug(f"Could not load custom icon asset: {e}")
+            img = None
 
-    # Theme colors
-    if enabled:
-        shield_fill = (15, 23, 42, 255)       # Slate 900
-        shield_border = (99, 102, 241, 255)   # Indigo
-        bolt_color = (56, 189, 248, 255)      # Cyan
-        status_color = (16, 185, 129, 255)    # Emerald green
+    if img is None:
+        img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+
+        # Outer shield shape
+        w = size - 2 * pad
+        h = size - 2 * pad
+        cx = size // 2
+        top = pad
+        bottom = size - pad
+        left = pad
+        right = size - pad
+        mid_y = int(pad + h * 0.55)
+
+        shield_pts = [
+            (left, top),
+            (right, top),
+            (right, mid_y),
+            (cx, bottom),
+            (left, mid_y),
+        ]
+
+        # Theme colors
+        if enabled:
+            shield_fill = (15, 23, 42, 255)       # Slate 900
+            shield_border = (99, 102, 241, 255)   # Indigo
+            bolt_color = (56, 189, 248, 255)      # Cyan
+            status_color = (16, 185, 129, 255)    # Emerald green
+        else:
+            shield_fill = (24, 24, 27, 255)       # Zinc 900
+            shield_border = (113, 113, 122, 255)  # Muted zinc
+            bolt_color = (161, 161, 170, 255)     # Muted gray
+            status_color = (245, 158, 11, 255)    # Amber paused
+
+        draw.polygon(shield_pts, fill=shield_fill, outline=shield_border, width=3)
+
+        # Inner lightning emblem
+        bolt = [
+            (cx + 3, int(top + h * 0.16)),
+            (cx - 10, int(top + h * 0.48)),
+            (cx - 2, int(top + h * 0.48)),
+            (cx - 6, int(top + h * 0.82)),
+            (cx + 11, int(top + h * 0.44)),
+            (cx + 2, int(top + h * 0.44)),
+        ]
+        draw.polygon(bolt, fill=bolt_color)
     else:
-        shield_fill = (24, 24, 27, 255)       # Zinc 900
-        shield_border = (113, 113, 122, 255)  # Muted zinc
-        bolt_color = (161, 161, 170, 255)     # Muted gray
-        status_color = (245, 158, 11, 255)    # Amber paused
-
-    draw.polygon(shield_pts, fill=shield_fill, outline=shield_border, width=3)
-
-    # Inner lightning emblem
-    bolt = [
-        (cx + 3, int(top + h * 0.16)),
-        (cx - 10, int(top + h * 0.48)),
-        (cx - 2, int(top + h * 0.48)),
-        (cx - 6, int(top + h * 0.82)),
-        (cx + 11, int(top + h * 0.44)),
-        (cx + 2, int(top + h * 0.44)),
-    ]
-    draw.polygon(bolt, fill=bolt_color)
+        draw = ImageDraw.Draw(img)
+        status_color = (16, 185, 129, 255) if enabled else (245, 158, 11, 255)
 
     # Status indicator circle (bottom right)
     dot_r = 7

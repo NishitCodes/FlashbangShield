@@ -77,6 +77,12 @@ class SettingsGUI:
 
     def create_window(self) -> tk.Tk:
         """Create and configure the Tkinter root window."""
+        # Explicit AppUserModelID gives the window its own distinct taskbar group and icon
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("FlashbangShield.App.1.0")
+        except Exception:
+            pass
+
         self.root = tk.Tk()
         self.root.title("Flashbang Shield")
         self.root.geometry("520x750")
@@ -86,11 +92,21 @@ class SettingsGUI:
         # Apply native Windows dark title bar
         self._apply_dark_title_bar()
 
-        # Set window icon if available
-        icon_path = Path(__file__).resolve().parent / "assets" / "icon.ico"
-        if icon_path.exists():
+        # Set window icon (both .ico and high-resolution .png for taskbar)
+        assets_dir = Path(__file__).resolve().parent / "assets"
+        ico_path = assets_dir / "icon.ico"
+        png_path = assets_dir / "icon.png"
+
+        if ico_path.exists():
             try:
-                self.root.iconbitmap(str(icon_path))
+                self.root.iconbitmap(str(ico_path))
+            except Exception:
+                pass
+
+        if png_path.exists():
+            try:
+                self._taskbar_icon = tk.PhotoImage(file=str(png_path))
+                self.root.iconphoto(True, self._taskbar_icon)
             except Exception:
                 pass
 

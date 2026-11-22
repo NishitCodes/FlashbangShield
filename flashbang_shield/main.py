@@ -107,6 +107,12 @@ class FlashbangShieldApp:
         self.logger.info("Starting Flashbang Shield...")
 
         try:
+            # Set Windows AppUserModelID so taskbar and tray group under Flashbang Shield
+            try:
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("FlashbangShield.App.1.0")
+            except Exception:
+                pass
+
             # 1. Start Engine
             self.engine.start()
             self.logger.info("Adaptive engine running")
