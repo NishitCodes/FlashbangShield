@@ -19,6 +19,13 @@ import sys
 import threading
 import time
 
+# Support direct script execution (e.g. from Windows Startup Run key: pythonw.exe path/to/main.py)
+if __name__ == "__main__" and not __package__:
+    _parent = Path(__file__).resolve().parent.parent
+    if str(_parent) not in sys.path:
+        sys.path.insert(0, str(_parent))
+    __package__ = "flashbang_shield"
+
 from .config import Config, PRESETS, load_config, save_config, get_default_config_path
 from .engine import ShieldEngine
 from .gui import SettingsGUI
