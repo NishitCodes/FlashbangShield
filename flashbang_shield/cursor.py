@@ -66,7 +66,8 @@ if user32:
     user32.DestroyIcon.argtypes = [wintypes.HICON]
     user32.DestroyIcon.restype = wintypes.BOOL
 
-    user32.SetSystemCursor.argtypes = [wintypes.HCURSOR, wintypes.DWORD]
+    HCURSOR = getattr(wintypes, "HCURSOR", getattr(wintypes, "HICON", wintypes.HANDLE))
+    user32.SetSystemCursor.argtypes = [HCURSOR, wintypes.DWORD]
     user32.SetSystemCursor.restype = wintypes.BOOL
 
     user32.SystemParametersInfoW.argtypes = [

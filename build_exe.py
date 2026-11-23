@@ -24,6 +24,11 @@ EXCLUDES = [
     "PySide6.QtPdf",
     "tkinter",
     "unittest",
+    "scipy",
+    "matplotlib",
+    "pandas",
+    "sklearn",
+    "torch",
 ]
 
 
