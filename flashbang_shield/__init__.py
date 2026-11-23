@@ -13,7 +13,14 @@ from .engine import ShieldEngine, EngineStats
 from .hotkeys import HotkeyManager
 from .tray import TrayIcon
 from .gui import SettingsGUI
-from .main import FlashbangShieldApp, main
+
+
+def __getattr__(name: str):
+    if name in ("FlashbangShieldApp", "main"):
+        from .main import FlashbangShieldApp, main
+        return {"FlashbangShieldApp": FlashbangShieldApp, "main": main}[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "Config",
