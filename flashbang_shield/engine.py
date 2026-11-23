@@ -8,11 +8,13 @@ Incorporates Gammy learnings:
 - WDA_EXCLUDEFROMCAPTURE zero-feedback loop protection
 """
 
+from __future__ import annotations
+
 import math
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .config import Config, PRESETS, load_config, save_config
 from .cursor import CursorDimmer
