@@ -24,14 +24,12 @@ from qfluentwidgets import (
     BodyLabel,
     CaptionLabel,
     CardWidget,
-    DoubleSpinBox,
     FluentIcon,
     FluentWindow,
     NavigationItemPosition,
     PrimaryPushButton,
     PushButton,
     Slider,
-    SpinBox,
     StrongBodyLabel,
     SubtitleLabel,
     SwitchButton,
@@ -142,7 +140,7 @@ class PresetCard(CardWidget):
 
 
 class SliderSpinRow(QWidget):
-    """Synchronized tactile Fluent slider + numeric spinbox with zero feedback loops."""
+    """Synchronized tactile Fluent slider with live numeric readout (no clipped text/spin boxes)."""
 
     value_changed = Signal(float)
 
@@ -159,11 +157,13 @@ class SliderSpinRow(QWidget):
     ) -> None:
         super().__init__(parent)
         self._scale = scale
+        self._suffix = suffix
         self._syncing = False
+        self._current_value: float = min_val
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 4, 0, 4)
-        outer.setSpacing(4)
+        outer.setSpacing(6)
 
         header = QHBoxLayout()
         title_box = QVBoxLayout()
@@ -175,23 +175,12 @@ class SliderSpinRow(QWidget):
         header.addLayout(title_box)
         header.addStretch(1)
 
-        if scale > 1:
-            self.spin: QWidget = DoubleSpinBox(self)
-            self.spin.setRange(min_val, max_val)
-            self.spin.setSingleStep(step)
-            self.spin.setDecimals(0 if suffix == "%" else 2)
-            self.spin.setSuffix(f" {suffix}")
-            self.spin.setFixedWidth(108)
-            self.spin.valueChanged.connect(self._on_spin_changed)
-        else:
-            self.spin = SpinBox(self)
-            self.spin.setRange(int(min_val), int(max_val))
-            self.spin.setSingleStep(int(step))
-            self.spin.setSuffix(f" {suffix}")
-            self.spin.setFixedWidth(108)
-            self.spin.valueChanged.connect(self._on_spin_changed)
-
-        header.addWidget(self.spin)
+        # Clean typography numeric readout (replaces clipped text/spin boxes)
+        self.val_lbl = StrongBodyLabel(self._format_value(min_val), self)
+        self.val_lbl.setStyleSheet(
+            "color: #F59E0B; font-weight: 600; font-size: 13px; font-family: 'Cascadia Mono', 'Segoe UI';"
+        )
+        header.addWidget(self.val_lbl, alignment=Qt.AlignmentFlag.AlignVCenter)
         outer.addLayout(header)
 
         self.slider = Slider(Qt.Orientation.Horizontal, self)
@@ -199,14 +188,23 @@ class SliderSpinRow(QWidget):
         self.slider.valueChanged.connect(self._on_slider_changed)
         outer.addWidget(self.slider)
 
+    def _format_value(self, val: float) -> str:
+        if self._suffix == "%":
+            return f"{val:.0f} %"
+        elif self._suffix == "ms":
+            return f"{val:.0f} ms"
+        else:
+            return f"{val:.1f} {self._suffix}"
+
+    def value(self) -> float:
+        return self._current_value
+
     def set_value(self, value: float) -> None:
         self._syncing = True
+        self._current_value = value
         try:
             self.slider.setValue(int(round(value * self._scale)))
-            if isinstance(self.spin, DoubleSpinBox):
-                self.spin.setValue(value)
-            else:
-                self.spin.setValue(int(round(value)))
+            self.val_lbl.setText(self._format_value(value))
         finally:
             self._syncing = False
 
@@ -214,25 +212,24 @@ class SliderSpinRow(QWidget):
         if self._syncing:
             return
         val = raw / self._scale
-        self._syncing = True
-        try:
-            if isinstance(self.spin, DoubleSpinBox):
-                self.spin.setValue(val)
-            else:
-                self.spin.setValue(int(round(val)))
-        finally:
-            self._syncing = False
+        self._current_value = val
+        self.val_lbl.setText(self._format_value(val))
         self.value_changed.emit(val)
 
-    def _on_spin_changed(self, val: float) -> None:
-        if self._syncing:
-            return
-        self._syncing = True
-        try:
-            self.slider.setValue(int(round(float(val) * self._scale)))
-        finally:
-            self._syncing = False
-        self.value_changed.emit(float(val))
+    @property
+    def spin(self):
+        """Compatibility helper so legacy callers reading spin.value() continue to work."""
+        class _SpinCompat:
+            def __init__(self, parent_row: SliderSpinRow):
+                self._parent = parent_row
+
+            def value(self) -> float:
+                return self._parent._current_value
+
+            def setValue(self, v: float) -> None:
+                self._parent.set_value(float(v))
+
+        return _SpinCompat(self)
 
 
 class MonitorCard(CardWidget):

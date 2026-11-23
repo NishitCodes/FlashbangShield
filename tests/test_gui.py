@@ -166,6 +166,8 @@ class TestDashboardAndCards(unittest.TestCase):
         row.set_value(45.0)
         self.assertEqual(row.slider.value(), 450)
         self.assertEqual(row.spin.value(), 45.0)
+        self.assertEqual(row.value(), 45.0)
+        self.assertEqual(row.val_lbl.text(), "45 %")
 
     def test_mini_hud(self):
         hud = MiniHudWindow()
