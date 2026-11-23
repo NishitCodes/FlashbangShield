@@ -1,23 +1,23 @@
 """Flashbang Shield - Application Entrypoint.
 
 Orchestrates:
-- Single-instance enforcement via Win32 Mutex
+- Single-instance enforcement via Win32 Mutex & Foreground Activation
 - ShieldEngine core adaptive screen sampler and layered overlay
 - Global Hotkey Manager (Win+Alt+O, Win+Alt+Up, Win+Alt+Down)
-- System Tray Icon (pystray) with live status and preset controls
-- Modern Dark-Themed Settings GUI & Real-Time Monitor (Tkinter)
+- System Tray Icon (pystray) with live status, presets, and Mini-HUD toggle
+- Modern Windows 11 Fluent Design Dashboard & 60 FPS Telemetry Oscilloscope (PySide6)
 - Graceful shutdown and config persistence
 """
 
+from __future__ import annotations
+
 import argparse
 import ctypes
-from ctypes import wintypes
 import logging
 import os
 from pathlib import Path
 import sys
-import threading
-import time
+from typing import Optional
 
 # Support direct script execution (e.g. from Windows Startup Run key: pythonw.exe path/to/main.py)
 if __name__ == "__main__" and not __package__:
@@ -26,9 +26,13 @@ if __name__ == "__main__" and not __package__:
         sys.path.insert(0, str(_parent))
     __package__ = "flashbang_shield"
 
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QApplication
+
 from .config import Config, PRESETS, load_config, save_config, get_default_config_path
 from .engine import ShieldEngine
-from .gui import SettingsGUI
+from .gui import FlashbangDashboard, create_gui_runtime
+from .gui_bridge import TelemetryBridge
 from .hotkeys import HotkeyManager
 from .tray import TrayIcon
 
@@ -37,7 +41,7 @@ MUTEX_NAME = "FlashbangShield_SingleInstance_Mutex"
 ERROR_ALREADY_EXISTS = 183
 
 
-def setup_logging(debug: bool = False):
+def setup_logging(debug: bool = False) -> None:
     """Configure console and file logging."""
     log_level = logging.DEBUG if debug else logging.INFO
     log_format = "%(asctime)s [%(levelname)s] [%(name)s]: %(message)s"
@@ -62,7 +66,7 @@ def setup_logging(debug: bool = False):
 class FlashbangShieldApp:
     """Main Application Controller."""
 
-    def __init__(self, start_minimized: bool = False, preset: str = None):
+    def __init__(self, start_minimized: bool = False, preset: Optional[str] = None):
         self.start_minimized = start_minimized
         self.preset_override = preset
 
@@ -75,12 +79,14 @@ class FlashbangShieldApp:
             self.config.apply_preset(self.preset_override)
 
         self.engine: ShieldEngine = ShieldEngine(self.config)
-        self.gui: SettingsGUI = None
-        self.tray: TrayIcon = None
-        self.hotkeys: HotkeyManager = None
+        self.app: Optional[QApplication] = None
+        self.bridge: Optional[TelemetryBridge] = None
+        self.gui: Optional[FlashbangDashboard] = None
+        self.tray: Optional[TrayIcon] = None
+        self.hotkeys: Optional[HotkeyManager] = None
 
         self._is_shutting_down = False
-        self._tray_sync_timer = None
+        self._tray_timer: Optional[QTimer] = None
 
     def acquire_single_instance_mutex(self) -> bool:
         """Ensure only one instance runs concurrently."""
@@ -92,16 +98,28 @@ class FlashbangShieldApp:
             return False
         return True
 
-    def release_single_instance_mutex(self):
+    def release_single_instance_mutex(self) -> None:
         """Release the named mutex upon shutdown."""
         if self._mutex_handle:
             ctypes.windll.kernel32.CloseHandle(self._mutex_handle)
             self._mutex_handle = None
 
-    def run(self):
-        """Main lifecycle entrypoint."""
+    def activate_existing_instance(self) -> None:
+        """Find and activate the existing running instance's window."""
+        try:
+            hwnd = ctypes.windll.user32.FindWindowW(None, "Flashbang Shield")
+            if hwnd:
+                SW_RESTORE = 9
+                ctypes.windll.user32.ShowWindow(hwnd, SW_RESTORE)
+                ctypes.windll.user32.SetForegroundWindow(hwnd)
+        except Exception as e:
+            self.logger.debug(f"Could not restore existing window: {e}")
+
+    def run(self) -> int:
+        """Main lifecycle entrypoint running QApplication event loop."""
         if not self.acquire_single_instance_mutex():
             print("Flashbang Shield is already running in the background.", file=sys.stderr)
+            self.activate_existing_instance()
             sys.exit(0)
 
         self.logger.info("Starting Flashbang Shield...")
@@ -117,22 +135,24 @@ class FlashbangShieldApp:
             self.engine.start()
             self.logger.info("Adaptive engine running")
 
-            # 2. Initialize GUI
-            self.gui = SettingsGUI(
+            # 2. Initialize Fluent GUI & Bridge
+            self.app, self.bridge, self.gui = create_gui_runtime(
                 engine=self.engine,
-                on_close_to_tray=self._on_gui_minimized,
-                on_exit_app=self.shutdown,
+                config=self.config,
+                on_config_saved=save_config,
+                on_hide_to_tray=self._on_gui_minimized,
+                start_minimized=self.start_minimized,
             )
-            root = self.gui.create_window()
 
-            # 3. Initialize System Tray
+            # 3. Initialize System Tray (pystray)
             self.tray = TrayIcon(
-                on_show_gui=lambda: self._call_on_ui_thread(self.gui.show_window),
+                on_show_gui=self.bridge.show_dashboard_requested.emit,
+                on_toggle_hud=self.bridge.toggle_mini_hud_requested.emit,
                 on_toggle_shield=self._on_toggle_shield,
                 on_set_preset=self._on_set_preset,
                 on_brightness_up=self._on_brightness_up,
                 on_brightness_down=self._on_brightness_down,
-                on_exit=lambda: self._call_on_ui_thread(self.shutdown),
+                on_exit=self.bridge.quit_requested.emit,
                 current_preset=self.config.preset,
                 enabled=self.config.enabled,
             )
@@ -146,91 +166,82 @@ class FlashbangShieldApp:
             )
             self.hotkeys.start()
 
-            # 5. Connect periodic tray sync
-            self._schedule_tray_sync(root)
+            # 5. Connect 1 Hz tray sync timer on Qt main thread
+            self._tray_timer = QTimer()
+            self._tray_timer.setInterval(1000)
+            self._tray_timer.timeout.connect(self._sync_tray_status)
+            self._tray_timer.start()
 
-            # 6. Show or minimize GUI
             if self.start_minimized:
-                self.gui.hide_window()
                 self.logger.info("Flashbang Shield running minimized in system tray")
-            else:
-                self.gui.show_window()
 
-            # 7. Start Tkinter Mainloop on Main Thread
-            root.mainloop()
+            # 6. Run Qt event loop on main thread
+            exit_code = self.app.exec()
+            return exit_code
 
         except KeyboardInterrupt:
             self.logger.info("KeyboardInterrupt received")
-            self.shutdown()
+            return 0
         finally:
-            self._cleanup()
+            self.shutdown()
 
-    def _call_on_ui_thread(self, fn, *args):
-        """Thread-safe UI invocation."""
-        if self.gui and self.gui.root:
-            try:
-                self.gui.root.after(0, fn, *args)
-            except Exception:
-                pass
-
-    def _schedule_tray_sync(self, root):
+    def _sync_tray_status(self) -> None:
         """Keep tray tooltip & icon synced with live dimming status."""
-        if self._is_shutting_down:
+        if self._is_shutting_down or self.tray is None:
             return
-
         try:
             stats = self.engine.get_stats()
             dim_alpha = stats.get("overlay_alpha", 0.0)
             enabled = self.engine.is_enabled()
             preset = self.config.preset
-
-            if self.tray:
-                self.tray.update_status(enabled=enabled, dim_alpha=dim_alpha, preset=preset)
+            self.tray.update_status(enabled=enabled, dim_alpha=dim_alpha, preset=preset)
         except Exception:
             pass
 
-        if root and not self._is_shutting_down:
-            root.after(1000, lambda: self._schedule_tray_sync(root))
-
-    def _on_gui_minimized(self):
+    def _on_gui_minimized(self) -> None:
         self.logger.debug("Dashboard minimized to tray")
 
-    def _on_toggle_shield(self):
+    def _on_toggle_shield(self) -> None:
         new_state = self.engine.toggle_enabled()
         self.logger.info(f"Shield toggled: {'Enabled' if new_state else 'Paused'}")
         if self.tray:
             self.tray.update_status(enabled=new_state, preset=self.config.preset)
-        if self.gui:
-            self._call_on_ui_thread(self.gui._update_status_button)
+        if self.bridge:
+            self.bridge.external_state_changed.emit()
 
-    def _on_set_preset(self, preset_name: str):
+    def _on_set_preset(self, preset_name: str) -> None:
         success = self.engine.set_preset(preset_name)
         if success:
             self.logger.info(f"Preset changed to {preset_name}")
             if self.tray:
                 self.tray.update_status(enabled=self.engine.is_enabled(), preset=preset_name)
-            if self.gui:
-                self._call_on_ui_thread(self.gui._update_preset_buttons)
-                self._call_on_ui_thread(self.gui._sync_sliders_from_config)
+            if self.bridge:
+                self.bridge.external_state_changed.emit()
 
-    def _on_brightness_up(self):
+    def _on_brightness_up(self) -> None:
         new_val = self.engine.adjust_target_brightness(+0.05)
         self.logger.info(f"Brightness increased: {new_val:.2f}")
-        if self.gui:
-            self._call_on_ui_thread(self.gui._sync_sliders_from_config)
+        if self.bridge:
+            self.bridge.external_state_changed.emit()
 
-    def _on_brightness_down(self):
+    def _on_brightness_down(self) -> None:
         new_val = self.engine.adjust_target_brightness(-0.05)
         self.logger.info(f"Brightness decreased: {new_val:.2f}")
-        if self.gui:
-            self._call_on_ui_thread(self.gui._sync_sliders_from_config)
+        if self.bridge:
+            self.bridge.external_state_changed.emit()
 
-    def shutdown(self):
+    def shutdown(self) -> None:
         """Cleanly tear down all components and close application."""
         if self._is_shutting_down:
             return
         self._is_shutting_down = True
         self.logger.info("Shutting down Flashbang Shield...")
+
+        if self._tray_timer:
+            try:
+                self._tray_timer.stop()
+            except Exception:
+                pass
 
         # Save config
         try:
@@ -260,21 +271,22 @@ class FlashbangShieldApp:
             except Exception as e:
                 self.logger.debug(f"Error stopping engine: {e}")
 
-        # Destroy GUI
-        if self.gui and self.gui.root:
+        # Hide & close GUI
+        if self.gui:
             try:
-                self.gui.root.destroy()
+                self.gui.mini_hud.close()
+                self.gui.close()
             except Exception:
                 pass
 
         self._cleanup()
 
-    def _cleanup(self):
+    def _cleanup(self) -> None:
         self.release_single_instance_mutex()
         self.logger.info("Flashbang Shield exited cleanly.")
 
 
-def main():
+def main() -> None:
     """Command-line entrypoint."""
     parser = argparse.ArgumentParser(
         prog="flashbang-shield",

@@ -92,6 +92,8 @@ class VerificationRunner:
             "flashbang_shield.overlay",
             "flashbang_shield.engine",
             "flashbang_shield.gui",
+            "flashbang_shield.gui_bridge",
+            "flashbang_shield.widgets.telemetry_graphs",
             "flashbang_shield.tray",
             "flashbang_shield.hotkeys",
             "flashbang_shield.main",
@@ -353,6 +355,27 @@ class VerificationRunner:
         hk._dispatch(_cb)
         time.sleep(0.05)
         self.record("HotkeyManager async debouncing (200ms window)", called == 1)
+
+        # PySide6 Fluent Dashboard & TelemetryBridge Check
+        try:
+            from PySide6.QtWidgets import QApplication
+            from flashbang_shield.config import Config
+            from flashbang_shield.engine import ShieldEngine
+            from flashbang_shield.gui import create_gui_runtime
+
+            app = QApplication.instance() or QApplication(sys.argv)
+            cfg_gui = Config()
+            engine_gui = ShieldEngine(cfg_gui)
+            _, bridge, dashboard = create_gui_runtime(engine_gui, cfg_gui, start_minimized=True)
+            gui_init_ok = (
+                dashboard is not None
+                and dashboard.windowTitle() == "Flashbang Shield"
+                and bridge is not None
+            )
+            self.record("Fluent Design Dashboard & TelemetryBridge instantiation", gui_init_ok)
+            dashboard.hide()
+        except Exception as e:
+            self.record("Fluent Design Dashboard & TelemetryBridge instantiation", False, str(e))
 
         # CLI Entrypoint --help verification
         res = subprocess.run(

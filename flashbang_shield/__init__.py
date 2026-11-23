@@ -12,7 +12,8 @@ from .prearm import PreArmManager
 from .engine import ShieldEngine, EngineStats
 from .hotkeys import HotkeyManager
 from .tray import TrayIcon
-from .gui import SettingsGUI
+from .gui import SettingsGUI, FlashbangDashboard, create_gui_runtime
+from .gui_bridge import TelemetryBridge, TelemetrySample
 
 
 def __getattr__(name: str):
@@ -42,6 +43,10 @@ __all__ = [
     "HotkeyManager",
     "TrayIcon",
     "SettingsGUI",
+    "FlashbangDashboard",
+    "create_gui_runtime",
+    "TelemetryBridge",
+    "TelemetrySample",
     "FlashbangShieldApp",
     "main",
 ]

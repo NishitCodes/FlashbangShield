@@ -2,6 +2,7 @@
 
 Provides quick tray menu access to:
 - Open Settings Dashboard
+- Toggle Mini-HUD
 - Toggle Shield On / Off
 - Switch Presets (Day, Evening, Night, Ultra-Dim)
 - Nudge brightness (+5% / -5%)
@@ -118,6 +119,7 @@ class TrayIcon:
     def __init__(
         self,
         on_show_gui: Optional[Callable[[], None]] = None,
+        on_toggle_hud: Optional[Callable[[], None]] = None,
         on_toggle_shield: Optional[Callable[[], None]] = None,
         on_set_preset: Optional[Callable[[str], None]] = None,
         on_brightness_up: Optional[Callable[[], None]] = None,
@@ -127,6 +129,7 @@ class TrayIcon:
         enabled: bool = True,
     ):
         self.on_show_gui = on_show_gui
+        self.on_toggle_hud = on_toggle_hud
         self.on_toggle_shield = on_toggle_shield
         self.on_set_preset = on_set_preset
         self.on_brightness_up = on_brightness_up
@@ -215,6 +218,10 @@ class TrayIcon:
             if self.on_show_gui:
                 self.on_show_gui()
 
+        def _toggle_hud_action(icon, item):
+            if self.on_toggle_hud:
+                self.on_toggle_hud()
+
         def _bright_up(icon, item):
             if self.on_brightness_up:
                 self.on_brightness_up()
@@ -223,38 +230,40 @@ class TrayIcon:
             if self.on_brightness_down:
                 self.on_brightness_down()
 
-        def _exit_app(icon, item):
+        def _exit_action(icon, item):
             if self.on_exit:
                 self.on_exit()
-            else:
-                self.stop()
 
-        preset_items = [
-            item(p_name, _preset_action(p_name), checked=_is_preset_checked(p_name), radio=True)
-            for p_name in PRESETS.keys()
-        ]
+        def _is_enabled_checked(item):
+            return self.enabled
 
         menu_items = [
-            item("Open Dashboard / Settings", _show_gui_action, default=True),
-            item(
-                lambda text: "Pause Shield (Win+Alt+O)" if self.enabled else "Resume Shield (Win+Alt+O)",
-                _toggle_action,
-            ),
-            pystray.Menu.SEPARATOR,
-            item("Presets", menu(*preset_items)),
-            item("Brightness Up (+5%)  [Win+Alt+Up]", _bright_up),
-            item("Brightness Down (-5%) [Win+Alt+Down]", _bright_down),
-            pystray.Menu.SEPARATOR,
-            item("Start with Windows", _toggle_startup, checked=_is_startup_checked),
-            pystray.Menu.SEPARATOR,
-            item("Exit Flashbang Shield", _exit_app),
+            item("Open Dashboard", _show_gui_action, default=True),
+            item("Toggle Mini-HUD", _toggle_hud_action),
+            item("Shield Active", _toggle_action, checked=_is_enabled_checked),
+            menu.SEPARATOR,
+            item("Presets", menu(
+                item("Day", _preset_action("Day"), checked=_is_preset_checked("Day"), radio=True),
+                item("Evening", _preset_action("Evening"), checked=_is_preset_checked("Evening"), radio=True),
+                item("Night", _preset_action("Night"), checked=_is_preset_checked("Night"), radio=True),
+                item("Ultra-Dim", _preset_action("Ultra-Dim"), checked=_is_preset_checked("Ultra-Dim"), radio=True),
+            )),
+            item("Nudge Brightness", menu(
+                item("Brighter (+5%)", _bright_up),
+                item("Darker (-5%)", _bright_down),
+            )),
+            menu.SEPARATOR,
+            item("Run at Startup", _toggle_startup, checked=_is_startup_checked),
+            menu.SEPARATOR,
+            item("Exit", _exit_action),
         ]
 
         return menu(*menu_items)
 
     def _run_icon(self):
-        """Execute pystray main loop."""
+        """Internal worker for running pystray loop."""
         try:
-            self._icon.run()
+            if self._icon:
+                self._icon.run()
         except Exception as e:
-            logger.error(f"Error in tray execution: {e}", exc_info=True)
+            logger.error(f"Tray icon loop error: {e}")
