@@ -102,8 +102,13 @@ def build():
     if result.returncode == 0:
         exe_path = output_dir / "FlashbangShield.exe"
         if exe_path.exists():
-            size_mb = exe_path.stat().st_size / (1024 * 1024)
-            print(f"\nBuild successful! Binary created at: {exe_path} ({size_mb:.2f} MB)")
+            import shutil
+            portable_path = output_dir / "FlashbangShield-Portable.exe"
+            shutil.copy2(exe_path, portable_path)
+            size_mb = portable_path.stat().st_size / (1024 * 1024)
+            print(f"\nBuild successful! Standalone & Portable binaries created at:")
+            print(f"  - {exe_path} ({size_mb:.2f} MB)")
+            print(f"  - {portable_path} ({size_mb:.2f} MB)")
         else:
             print(f"\nBuild finished successfully in: {output_dir}")
     else:

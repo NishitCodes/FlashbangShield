@@ -1,5 +1,5 @@
 ; Inno Setup Script for Flashbang Shield
-; Builds directly installable Windows executable (FlashbangShield-Setup.exe)
+; Builds directly installable Windows executable (FlashbangShield-Installer.exe)
 
 #define MyAppName "Flashbang Shield"
 #define MyAppVersion "1.0.0"
@@ -19,7 +19,7 @@ DefaultDirName={localappdata}\Programs\FlashbangShield
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 OutputDir=dist
-OutputBaseFilename=FlashbangShield-Setup
+OutputBaseFilename=FlashbangShield-Installer
 SetupIconFile=flashbang_shield\assets\icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2/ultra64

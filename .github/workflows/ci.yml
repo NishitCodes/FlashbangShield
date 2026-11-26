@@ -87,19 +87,19 @@ jobs:
         id: checksum
         shell: pwsh
         run: |
-          $setupHash = (Get-FileHash dist/FlashbangShield-Setup.exe -Algorithm SHA256).Hash
-          $exeHash = (Get-FileHash dist/FlashbangShield.exe -Algorithm SHA256).Hash
-          echo "Setup SHA256: $setupHash"
-          echo "Exe SHA256:   $exeHash"
-          "$setupHash  FlashbangShield-Setup.exe`n$exeHash  FlashbangShield.exe" | Out-File -Encoding utf8 dist/checksums.sha256
+          $installerHash = (Get-FileHash dist/FlashbangShield-Installer.exe -Algorithm SHA256).Hash
+          $portableHash = (Get-FileHash dist/FlashbangShield-Portable.exe -Algorithm SHA256).Hash
+          echo "Installer SHA256: $installerHash"
+          echo "Portable SHA256:  $portableHash"
+          "$installerHash  FlashbangShield-Installer.exe`n$portableHash  FlashbangShield-Portable.exe" | Out-File -Encoding utf8 dist/checksums.sha256
 
       - name: Upload installer & executable artifacts
         uses: actions/upload-artifact@v4
         with:
           name: FlashbangShield-Windows-x64
           path: |
-            dist/FlashbangShield-Setup.exe
-            dist/FlashbangShield.exe
+            dist/FlashbangShield-Installer.exe
+            dist/FlashbangShield-Portable.exe
             dist/checksums.sha256
           if-no-files-found: error
 
@@ -121,7 +121,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/FlashbangShield-Setup.exe
-            dist/FlashbangShield.exe
+            dist/FlashbangShield-Installer.exe
+            dist/FlashbangShield-Portable.exe
             dist/checksums.sha256
           generate_release_notes: true

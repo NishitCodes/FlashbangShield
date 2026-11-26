@@ -18,8 +18,8 @@ Download the latest version directly from the [GitHub Releases](https://github.c
 
 | Package | Type | Description |
 |---|---|---|
-| **[FlashbangShield-Setup.exe](https://github.com/NishitCodes/FlashbangShield/releases/latest/download/FlashbangShield-Setup.exe)** | **Windows Installer (Recommended)** | Automatically installs Flashbang Shield to user profile, creates Start Menu and Desktop shortcuts, adds uninstallation entry, and configures optional Windows startup. |
-| **[FlashbangShield.exe](https://github.com/NishitCodes/FlashbangShield/releases/latest/download/FlashbangShield.exe)** | **Portable Executable** | Standalone single-file binary. No installation required — run directly from anywhere. |
+| **[FlashbangShield-Installer.exe](https://github.com/NishitCodes/FlashbangShield/releases/latest/download/FlashbangShield-Installer.exe)** | **Windows Installer (Recommended)** | Automatically installs Flashbang Shield to user profile, creates Start Menu and Desktop shortcuts, adds uninstallation entry, and configures optional Windows startup. |
+| **[FlashbangShield-Portable.exe](https://github.com/NishitCodes/FlashbangShield/releases/latest/download/FlashbangShield-Portable.exe)** | **Portable Executable** | Standalone single-file binary. No installation required — run directly from anywhere. |
 
 ---
 
