@@ -230,6 +230,10 @@ class TrayIcon:
             if self.on_brightness_down:
                 self.on_brightness_down()
 
+        def _open_github_action(icon, item):
+            import webbrowser
+            webbrowser.open("https://github.com/NishitCodes/FlashbangShield")
+
         def _exit_action(icon, item):
             if self.on_exit:
                 self.on_exit()
@@ -254,6 +258,7 @@ class TrayIcon:
             )),
             menu.SEPARATOR,
             item("Run at Startup", _toggle_startup, checked=_is_startup_checked),
+            item("★ Star on GitHub", _open_github_action),
             menu.SEPARATOR,
             item("Exit", _exit_action),
         ]

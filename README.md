@@ -2,6 +2,7 @@
 
 [![CI & Release Build](https://github.com/NishitCodes/FlashbangShield/actions/workflows/ci.yml/badge.svg)](https://github.com/NishitCodes/FlashbangShield/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/NishitCodes/FlashbangShield?color=F59E0B&label=Release)](https://github.com/NishitCodes/FlashbangShield/releases/latest)
+[![Stars](https://img.shields.io/github/stars/NishitCodes/FlashbangShield?color=F59E0B&label=Stars)](https://github.com/NishitCodes/FlashbangShield)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2011%20%7C%2010-0078D4?logo=windows)](https://github.com/NishitCodes/FlashbangShield)
 [![License](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 
@@ -83,6 +84,16 @@ python build_exe.py
 # Build Windows installer setup (requires Inno Setup 6)
 iscc installer.iss
 ```
+
+---
+
+## ⭐ Support & Star the Repository
+
+If **Flashbang Shield** has saved your eyes from sudden blinding white screens, please consider **[starring the repository on GitHub](https://github.com/NishitCodes/FlashbangShield)**! 
+
+Your star takes just one click, shows support for ongoing development, and helps more developers and gamers discover the project.
+
+[![Star on GitHub](https://img.shields.io/github/stars/NishitCodes/FlashbangShield?style=social)](https://github.com/NishitCodes/FlashbangShield)
 
 ---
 

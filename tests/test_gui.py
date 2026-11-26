@@ -227,6 +227,9 @@ class TestDashboardAndCards(unittest.TestCase):
         dashboard.toggle_mini_hud()
         self.assertFalse(dashboard.mini_hud.isVisible())
 
+        # Test About page
+        self.assertIsNotNone(dashboard._about_page)
+
         # Cleanup
         dashboard.hide()
 

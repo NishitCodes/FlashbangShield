@@ -7,13 +7,23 @@ from pathlib import Path
 import sys
 from typing import Any, Callable, Dict, List, Optional, Protocol
 
-from PySide6.QtCore import QPoint, Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QCloseEvent, QColor, QGuiApplication, QIcon, QMouseEvent, QShowEvent
+from PySide6.QtCore import QPoint, Qt, QTimer, QUrl, Signal, Slot
+from PySide6.QtGui import (
+    QCloseEvent,
+    QColor,
+    QDesktopServices,
+    QGuiApplication,
+    QIcon,
+    QMouseEvent,
+    QPixmap,
+    QShowEvent,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QLabel,
     QProgressBar,
     QScrollArea,
     QSizePolicy,
@@ -461,6 +471,7 @@ class FlashbangDashboard(FluentWindow):
         self._tuning_page = self._build_tuning_page()
         self._displays_page = self._build_displays_page()
         self._system_page = self._build_system_page()
+        self._about_page = self._build_about_page()
 
         self.addSubInterface(self._overview_page, FluentIcon.SPEED_HIGH, "Overview")
         self.addSubInterface(self._tuning_page, FluentIcon.SETTING, "Tuning")
@@ -469,6 +480,12 @@ class FlashbangDashboard(FluentWindow):
             self._system_page,
             FluentIcon.APPLICATION,
             "System",
+            position=NavigationItemPosition.BOTTOM,
+        )
+        self.addSubInterface(
+            self._about_page,
+            FluentIcon.INFO,
+            "About",
             position=NavigationItemPosition.BOTTOM,
         )
 
@@ -710,6 +727,178 @@ class FlashbangDashboard(FluentWindow):
         layout.addWidget(hk_card)
         layout.addStretch(1)
         return self._wrap_scroll(page, "system_page")
+
+    def _build_about_page(self) -> QScrollArea:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(20, 16, 20, 20)
+        layout.setSpacing(14)
+
+        layout.addWidget(SubtitleLabel("About Flashbang Shield", page))
+
+        # Hero Card: Logo, Name, Version, Tagline & Badges
+        hero_card = CardWidget(page)
+        hero_layout = QVBoxLayout(hero_card)
+        hero_layout.setContentsMargins(16, 16, 16, 16)
+        hero_layout.setSpacing(10)
+
+        top_row = QHBoxLayout()
+        top_row.setSpacing(14)
+
+        icon_path = Path(__file__).resolve().parent / "assets" / "icon.png"
+        if icon_path.exists():
+            icon_lbl = QLabel(hero_card)
+            pm = QPixmap(str(icon_path)).scaled(
+                54, 54, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+            )
+            icon_lbl.setPixmap(pm)
+            icon_lbl.setFixedSize(54, 54)
+            top_row.addWidget(icon_lbl)
+
+        title_col = QVBoxLayout()
+        title_col.setSpacing(2)
+        app_title = SubtitleLabel("Flashbang Shield", hero_card)
+        app_sub = CaptionLabel(
+            "Version 1.0.0 · Optical Glare & Flashbang Protection for Windows 11",
+            hero_card,
+        )
+        app_sub.setTextColor(QColor(148, 163, 184), QColor(148, 163, 184))
+        title_col.addWidget(app_title)
+        title_col.addWidget(app_sub)
+        top_row.addLayout(title_col)
+        top_row.addStretch(1)
+        hero_layout.addLayout(top_row)
+
+        # Tech badges row
+        badges_row = QHBoxLayout()
+        badges_row.setSpacing(8)
+        badges = [
+            ("GPL-3.0 License", "rgba(59, 130, 246, 0.16)", "#60A5FA"),
+            ("Windows 11 Fluent", "rgba(245, 158, 11, 0.16)", "#F59E0B"),
+            ("60 FPS DXGI Pipeline", "rgba(56, 189, 248, 0.16)", "#38BDF8"),
+            ("C SIMD Luminance Core", "rgba(16, 185, 129, 0.16)", "#10B981"),
+        ]
+        for text, bg, fg in badges:
+            b = CaptionLabel(text, hero_card)
+            b.setStyleSheet(
+                f"background: {bg}; color: {fg}; padding: 3px 8px; "
+                "border-radius: 6px; font-weight: 600;"
+            )
+            badges_row.addWidget(b)
+        badges_row.addStretch(1)
+        hero_layout.addLayout(badges_row)
+        layout.addWidget(hero_card)
+
+        # ⭐ Star & GitHub Redirect Card (Highlighted with Amber Visor glow)
+        star_card = CardWidget(page)
+        star_card.setObjectName("starCard")
+        star_card.setStyleSheet(
+            """
+            #starCard {
+                background-color: rgba(245, 158, 11, 0.08);
+                border: 1.5px solid rgba(245, 158, 11, 0.50);
+                border-radius: 10px;
+            }
+            #starCard:hover {
+                background-color: rgba(245, 158, 11, 0.12);
+                border: 1.5px solid rgba(245, 158, 11, 0.85);
+            }
+            """
+        )
+        star_layout = QVBoxLayout(star_card)
+        star_layout.setContentsMargins(18, 16, 18, 16)
+        star_layout.setSpacing(10)
+
+        star_header = QHBoxLayout()
+        star_title = StrongBodyLabel("⭐ Star the Repository on GitHub", star_card)
+        star_title.setStyleSheet("color: #FBBF24; font-size: 15px; font-weight: 700;")
+        star_header.addWidget(star_title)
+        star_header.addStretch(1)
+        star_layout.addLayout(star_header)
+
+        star_desc = BodyLabel(
+            "Flashbang Shield is free and open-source. If this tool saves your eyes from sudden "
+            "blinding white browser tabs or flashbangs in games, please consider starring the repository on GitHub! "
+            "Your star takes just one click, shows support for ongoing development, and helps more people find the project.",
+            star_card,
+        )
+        star_desc.setWordWrap(True)
+        star_desc.setTextColor(QColor(226, 232, 240), QColor(226, 232, 240))
+        star_layout.addWidget(star_desc)
+
+        # Action Buttons
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
+
+        star_btn = PrimaryPushButton(FluentIcon.GITHUB, "★ Star on GitHub", star_card)
+        star_btn.setMinimumHeight(36)
+        star_btn.clicked.connect(lambda: self._open_external_url("https://github.com/NishitCodes/FlashbangShield"))
+        btn_row.addWidget(star_btn)
+
+        profile_btn = PushButton(FluentIcon.PEOPLE, "Developer Profile (@NishitCodes)", star_card)
+        profile_btn.setMinimumHeight(36)
+        profile_btn.clicked.connect(lambda: self._open_external_url("https://github.com/NishitCodes"))
+        btn_row.addWidget(profile_btn)
+
+        issue_btn = PushButton(FluentIcon.FEEDBACK, "Report Issue", star_card)
+        issue_btn.setMinimumHeight(36)
+        issue_btn.clicked.connect(lambda: self._open_external_url("https://github.com/NishitCodes/FlashbangShield/issues"))
+        btn_row.addWidget(issue_btn)
+
+        btn_row.addStretch(1)
+        star_layout.addLayout(btn_row)
+        layout.addWidget(star_card)
+
+        # Project Details Card
+        info_card = CardWidget(page)
+        info_layout = QVBoxLayout(info_card)
+        info_layout.setContentsMargins(16, 14, 16, 14)
+        info_layout.setSpacing(10)
+        info_layout.addWidget(StrongBodyLabel("Project Information", info_card))
+
+        meta_items = [
+            ("Author / Creator", "Nishit (@NishitCodes)"),
+            ("Repository", "https://github.com/NishitCodes/FlashbangShield"),
+            ("Releases & Downloads", "https://github.com/NishitCodes/FlashbangShield/releases"),
+            ("License", "GNU General Public License v3.0 (GPL-3.0)"),
+        ]
+        for key, val in meta_items:
+            r = QHBoxLayout()
+            k_lbl = CaptionLabel(key, info_card)
+            k_lbl.setFixedWidth(140)
+            k_lbl.setTextColor(QColor(148, 163, 184), QColor(148, 163, 184))
+            r.addWidget(k_lbl)
+
+            if val.startswith("http"):
+                v_btn = PushButton(val, info_card)
+                v_btn.setStyleSheet(
+                    "text-align: left; background: transparent; border: none; "
+                    "color: #38BDF8; text-decoration: underline;"
+                )
+                v_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                v_btn.clicked.connect(lambda _, url=val: self._open_external_url(url))
+                r.addWidget(v_btn)
+            else:
+                v_lbl = BodyLabel(val, info_card)
+                r.addWidget(v_lbl)
+
+            r.addStretch(1)
+            info_layout.addLayout(r)
+
+        layout.addWidget(info_card)
+        layout.addStretch(1)
+        return self._wrap_scroll(page, "about_page")
+
+    @staticmethod
+    def _open_external_url(url: str) -> None:
+        """Safely open an external HTTP URL in the user's default web browser."""
+        try:
+            if not QDesktopServices.openUrl(QUrl(url)):
+                import webbrowser
+                webbrowser.open(url)
+        except Exception:
+            import webbrowser
+            webbrowser.open(url)
 
     # ------------------------------------------------------------ State & Loop
     def _sync_controls_from_config(self) -> None:
